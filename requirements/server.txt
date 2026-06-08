@@ -1,0 +1,9 @@
+# GPU-server dependencies (1x8 H100 train / 1x4 A100 inference).
+# Install with: pip install -r requirements/server.txt
+-r models.txt
+vllm>=0.5            # fast policy-model generation during MCTS (Stage 5)
+peft>=0.11          # LoRA fine-tuning (Stage 4)
+trl>=0.9            # DPO (Stage 4.2)
+bitsandbytes>=0.43  # 8-bit / quantized loading
+wandb>=0.17         # experiment tracking
+# flash-attn         # optional; install separately, matched to CUDA/torch build

@@ -1,0 +1,42 @@
+# Virtual environment
+RAG/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Data & artifacts (large / generated — keep dirs via .gitkeep)
+data/corpus/*
+data/trajectories/*
+data/etbench_open/*
+data/pilot_reports/*
+!data/**/.gitkeep
+*.faiss
+*.index
+*.bin
+*.pt
+*.ckpt
+checkpoints/
+outputs/
+wandb/
+
+# Secrets
+.env
+*.key
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evidencetree"
+version = "0.1.0"
+description = "EvidenceTree: multimodal RAG with MCTS over a retrieval action space, guided by a grounded PRM and a Thompson-Sampling bandit."
+requires-python = ">=3.10"
+readme = "README.md"
+# Runtime deps are kept in requirements/*.txt so we can split local vs. GPU-server
+# installs. pyproject only declares the package itself.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

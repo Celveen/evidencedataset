@@ -1,0 +1,16 @@
+# MCTS / bandit config — placeholder (filled out in Stage 5 & Stage 6).
+#
+# search:
+#   rollouts: 10        # P
+#   max_depth: 3
+#   top_k_children: ...
+#   c_puct: ...
+#   early_stop_q: ...
+# uct:
+#   modality_bonus: { w_mod: ..., w_gran: ... }
+# bandit:
+#   arms: [0.1, 0.3, 0.5, 0.7, 1.0]
+#   warmup: 3           # round-robin over {0.1, 0.5, 1.0}
+#   prior: { alpha: 1, beta: 1 }
+#   per_query: true     # NEVER share state across queries
+placeholder: true

@@ -1,0 +1,11 @@
+# Model-related dependencies. Needed only when actually loading models
+# (real VisualPRM-8B scoring, HF local generation, dense retrieval).
+# On macOS these install as CPU/MPS builds — fine for development, too slow for 8B.
+-r base.txt
+torch>=2.1
+transformers>=4.44
+accelerate>=0.30
+sentence-transformers>=2.7   # dense retriever (Stage 1+)
+faiss-cpu>=1.7               # vector index (Stage 1+); use faiss-gpu on the server
+einops>=0.7
+pillow>=10.0                 # image handling for multimodal inputs

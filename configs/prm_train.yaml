@@ -1,0 +1,9 @@
+# PRM training config — placeholder (filled out in Stage 4).
+#
+# base_model: OpenGVLab/VisualPRM-8B
+# lora: { r: 16, alpha: 32, dropout: 0.05, target_modules: [...] }
+# stage_4_1_sft:        { epochs: ..., lr: ..., batch_size: ... }
+# stage_4_2_dpo:        { beta: ..., pairs: action_typed }
+# stage_4_3_calibration: { method: temperature }   # temperature | platt
+# infer: { mode: score_only }
+placeholder: true
