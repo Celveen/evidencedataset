@@ -1,22 +1,32 @@
 """Retriever wrappers.
 
-* ``BM25Retriever`` — real, lexical retrieval over the local corpus
-  (``rank-bm25``). Used by Stage 0.1's vanilla RAG and by Stage 1.
-* ``DenseRetriever`` — placeholder for Stage 1 (sentence-transformers / CLIP
-  + FAISS). Raises ``NotImplementedError`` until then.
+* ``BM25Retriever`` — lexical retrieval over the local corpus (``rank-bm25``).
+* ``DenseRetriever`` — dense retrieval: encoder embeddings + FAISS inner
+  product. The encoder is injectable (tests pass a deterministic fake); the
+  default lazily loads a sentence-transformers model.
+* ``ClipImageRetriever`` — image->document retrieval in CLIP's shared
+  embedding space (query = image or image region; corpus side = doc image if
+  present, else doc text).
 
 All retrieval is OFFLINE on the benchmark's own corpus — no web API.
+Heavy deps (faiss / sentence-transformers / PIL) are imported lazily so the
+mock smoke tests never need them.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from typing import Sequence
+from pathlib import Path
+from typing import Callable, Sequence
 
 from rank_bm25 import BM25Okapi
 
 from ..eval.benchmarks import Document
+
+# An encoder maps a list of inputs (str or PIL.Image) to a 2D array (n, dim).
+Encoder = Callable[[Sequence], "object"]
 
 
 @dataclass
@@ -27,6 +37,7 @@ class RetrievalHit:
     text: str
     score: float
     title: str = ""
+    image_path: str | None = None
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -60,28 +71,209 @@ class BM25Retriever:
         ranked = sorted(
             range(len(self._docs)), key=lambda i: scores[i], reverse=True
         )[:top_k]
-        return [
-            RetrievalHit(
-                doc_id=self._docs[i].doc_id,
-                text=self._docs[i].text,
-                score=float(scores[i]),
-                title=self._docs[i].title,
-            )
-            for i in ranked
-        ]
+        return [_hit(self._docs[i], float(scores[i])) for i in ranked]
 
     def __len__(self) -> int:
         return len(self._docs)
 
 
-class DenseRetriever:
-    """Dense / multimodal retriever (sentence-transformers / CLIP + FAISS).
+def _hit(doc: Document, score: float) -> RetrievalHit:
+    return RetrievalHit(
+        doc_id=doc.doc_id,
+        text=doc.text,
+        score=score,
+        title=doc.title,
+        image_path=doc.image_path,
+    )
 
-    Placeholder — implemented in Stage 1 (see implementation report §Stage 1).
+
+class DenseRetriever:
+    """Dense retriever: encoder embeddings + FAISS inner-product index.
+
+    Args:
+        model_name: sentence-transformers model id (used only when no custom
+            ``encoder`` is given; loaded lazily on first encode).
+        encoder: optional callable ``(list[str]) -> (n, dim) array``. Inject a
+            deterministic fake in tests to avoid model downloads.
+        device: forwarded to sentence-transformers.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            "DenseRetriever is implemented in Stage 1 (dense/CLIP + FAISS). "
-            "Stage 0.1 only uses BM25Retriever."
-        )
+    def __init__(
+        self,
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        encoder: Encoder | None = None,
+        device: str | None = None,
+    ) -> None:
+        self.model_name = model_name
+        self.device = device
+        self._encoder = encoder
+        self._model = None
+        self._docs: list[Document] = []
+        self._index = None  # faiss.IndexFlatIP
+
+    # ------------------------------------------------------------------ #
+    def build(self, corpus: Sequence[Document]) -> "DenseRetriever":
+        """Encode and index a corpus. Must be called before :meth:`search`."""
+        if not corpus:
+            raise ValueError("Cannot build a dense index from an empty corpus.")
+        self._docs = list(corpus)
+        vecs = self._encode([f"{d.title} {d.text}".strip() for d in self._docs])
+        self._index = self._new_index(vecs)
+        return self
+
+    def search(self, query: str, top_k: int = 5) -> list[RetrievalHit]:
+        if self._index is None:
+            raise RuntimeError("DenseRetriever.search called before build()/load().")
+        qv = self._encode([query])
+        return self._search_vec(qv, top_k)
+
+    # ------------------------------------------------------------------ #
+    # Persistence (used by scripts/build_index.py — offline, one-time)
+    # ------------------------------------------------------------------ #
+    def save(self, dir_path: str | Path) -> Path:
+        """Write ``index.faiss`` + ``docs.jsonl`` into ``dir_path``."""
+        import faiss
+
+        if self._index is None:
+            raise RuntimeError("Nothing to save: build() the index first.")
+        dir_path = Path(dir_path)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(self._index, str(dir_path / "index.faiss"))
+        with (dir_path / "docs.jsonl").open("w", encoding="utf-8") as f:
+            for d in self._docs:
+                f.write(json.dumps({
+                    "doc_id": d.doc_id, "text": d.text, "title": d.title,
+                    "image_path": d.image_path,
+                }, ensure_ascii=False) + "\n")
+        return dir_path
+
+    @classmethod
+    def load(
+        cls,
+        dir_path: str | Path,
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        encoder: Encoder | None = None,
+        device: str | None = None,
+    ) -> "DenseRetriever":
+        import faiss
+
+        dir_path = Path(dir_path)
+        inst = cls(model_name=model_name, encoder=encoder, device=device)
+        inst._index = faiss.read_index(str(dir_path / "index.faiss"))
+        with (dir_path / "docs.jsonl").open("r", encoding="utf-8") as f:
+            inst._docs = [Document(**json.loads(line)) for line in f if line.strip()]
+        return inst
+
+    def __len__(self) -> int:
+        return len(self._docs)
+
+    # ------------------------------------------------------------------ #
+    # Internals
+    # ------------------------------------------------------------------ #
+    def _encode(self, items: Sequence):
+        import numpy as np
+
+        if self._encoder is not None:
+            vecs = np.asarray(self._encoder(items), dtype="float32")
+        else:
+            vecs = self._st_model().encode(
+                list(items), convert_to_numpy=True, show_progress_bar=False
+            ).astype("float32")
+        # L2-normalize so inner product == cosine similarity.
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs / np.clip(norms, 1e-12, None)
+
+    def _st_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            self._model = SentenceTransformer(self.model_name, device=self.device)
+        return self._model
+
+    @staticmethod
+    def _new_index(vecs):
+        import faiss
+
+        index = faiss.IndexFlatIP(vecs.shape[1])
+        index.add(vecs)
+        return index
+
+    def _search_vec(self, qv, top_k: int) -> list[RetrievalHit]:
+        scores, ids = self._index.search(qv, min(top_k, len(self._docs)))
+        return [
+            _hit(self._docs[i], float(s))
+            for s, i in zip(scores[0], ids[0])
+            if i >= 0
+        ]
+
+
+class ClipImageRetriever(DenseRetriever):
+    """Image->document retrieval in CLIP's shared text/image embedding space.
+
+    Corpus side: a doc embeds via its image when ``image_path`` is set, else
+    via its text (CLIP text tower, truncated to its token limit). Query side:
+    an image (optionally cropped to a normalized bbox region first).
+
+    For tests, inject ``encoder`` (used for text) and ``image_encoder``; the
+    default lazily loads one CLIP model for both.
+    """
+
+    def __init__(
+        self,
+        model_name: str = "clip-ViT-B-32",
+        encoder: Encoder | None = None,
+        image_encoder: Encoder | None = None,
+        device: str | None = None,
+    ) -> None:
+        super().__init__(model_name=model_name, encoder=encoder, device=device)
+        self._image_encoder = image_encoder
+
+    def build(self, corpus: Sequence[Document]) -> "ClipImageRetriever":
+        if not corpus:
+            raise ValueError("Cannot build a CLIP index from an empty corpus.")
+        import numpy as np
+
+        self._docs = list(corpus)
+        parts = []
+        for d in self._docs:
+            if d.image_path:
+                parts.append(self._encode_images([self._open_image(d.image_path)]))
+            else:
+                parts.append(self._encode([f"{d.title} {d.text}".strip()]))
+        self._index = self._new_index(np.vstack(parts))
+        return self
+
+    def search_image(
+        self,
+        image_path: str,
+        region: tuple[float, float, float, float] | None = None,
+        top_k: int = 5,
+    ) -> list[RetrievalHit]:
+        """Retrieve with an image (or a normalized-bbox region of it) as query."""
+        if self._index is None:
+            raise RuntimeError("ClipImageRetriever.search_image called before build().")
+        img = self._open_image(image_path)
+        if region is not None:
+            w, h = img.size
+            x1, y1, x2, y2 = region
+            img = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
+        return self._search_vec(self._encode_images([img]), top_k)
+
+    # ------------------------------------------------------------------ #
+    def _encode_images(self, images: Sequence):
+        import numpy as np
+
+        if self._image_encoder is not None:
+            vecs = np.asarray(self._image_encoder(images), dtype="float32")
+        else:
+            vecs = self._st_model().encode(
+                list(images), convert_to_numpy=True, show_progress_bar=False
+            ).astype("float32")
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        return vecs / np.clip(norms, 1e-12, None)
+
+    @staticmethod
+    def _open_image(path: str):
+        from PIL import Image
+
+        return Image.open(path).convert("RGB")

@@ -19,6 +19,7 @@ data/corpus/*
 data/trajectories/*
 data/etbench_open/*
 data/pilot_reports/*
+data/inference_reports/*
 !data/**/.gitkeep
 *.faiss
 *.index

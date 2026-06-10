@@ -1,16 +1,53 @@
-# MCTS / bandit config — placeholder (filled out in Stage 5 & Stage 6).
-#
-# search:
-#   rollouts: 10        # P
-#   max_depth: 3
-#   top_k_children: ...
-#   c_puct: ...
-#   early_stop_q: ...
-# uct:
-#   modality_bonus: { w_mod: ..., w_gran: ... }
-# bandit:
-#   arms: [0.1, 0.3, 0.5, 0.7, 1.0]
-#   warmup: 3           # round-robin over {0.1, 0.5, 1.0}
-#   prior: { alpha: 1, beta: 1 }
-#   per_query: true     # NEVER share state across queries
-placeholder: true
+# MCTS inference config (Stage 5 fixed lambda; Stage 6 flips bandit.enabled).
+# Run: python scripts/run_inference.py --config configs/mcts.yaml [--mock]
+
+n_queries: 20                  # queries to evaluate (mock caps at ~100)
+
+search:
+  rollouts: 10                 # P — rollout budget per query
+  max_depth: 3
+  top_k_children: 3            # children kept per expansion (PRM-ranked)
+  c_uct: 1.0                   # exploration constant
+  lam: 0.3                     # fixed lambda (ignored when bandit.enabled)
+  early_stop_q: 0.9            # tau_stop — stop when a rollout reward exceeds this
+  seed: 0
+
+uct:
+  w_mod: 1.0                   # modality-novelty bonus: new action type
+  w_gran: 0.5                  # modality-novelty bonus: new visual granularity
+
+bandit:                        # Stage 6 — Thompson Sampling over lambda arms
+  enabled: false               # flip to true for adaptive lambda
+  arms: [0.1, 0.3, 0.5, 0.7, 1.0]
+  warmup: 3                    # round-robin warm-up over {0.1, 0.5, 1.0}
+  # Bandit state is per-query by construction (fresh instance per search()).
+
+data:
+  benchmark: infoseek
+  data_dir: data/corpus/infoseek
+  seed: 0
+
+retriever:
+  type: bm25                   # bm25 | dense (dense needs a built index)
+  top_k: 5
+
+generation:                    # proposer's answer-drafting backend
+  backend: mock                # mock | hf | api
+  model: Qwen/Qwen2.5-VL-7B-Instruct
+  provider: anthropic
+  max_new_tokens: 32
+  temperature: 0.0
+  mock_accuracy: 0.6
+  mock_seed: 0
+
+prm:                           # pluggable scorer (frozen VisualPRM until Stage 4)
+  model_name: OpenGVLab/VisualPRM-8B
+  device: null
+  mock_correlation: 0.2
+  mock_seed: 0
+
+outcome:
+  metric: exact_match
+
+output:
+  report_dir: data/inference_reports

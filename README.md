@@ -26,7 +26,11 @@ pip install -e .
 # 3. 跑通第一步 Stage 0.1（mock 模式，无需 GPU / 无需下载模型）
 python pilot/stage0_1_visualprm_diagnosis.py --config configs/pilot.yaml --mock
 
-# 4. 跑测试
+# 4. 跑 MCTS 搜索框架（mock 数据 + 启发式 scorer，离线）
+python scripts/run_inference.py --config configs/mcts.yaml --mock
+python scripts/run_inference.py --config configs/mcts.yaml --mock --set bandit.enabled=true
+
+# 5. 跑测试
 pytest
 ```
 
@@ -61,15 +65,18 @@ tests/            单元测试
 
 - [x] **框架搭建** — 目录骨架 + 依赖 + 虚拟环境
 - [x] **Stage 0.1** — VisualPRM 失败模式诊断 pipeline（mock 可跑通；real 待服务器）
-- [ ] Stage 0.2 — MCTS vs Best-of-N gap
+- [ ] Stage 0.2 — MCTS vs Best-of-N gap（搜索框架已就绪，待真实 PRM/数据）
 - [ ] Stage 0.3 — 50 样本人工标注一致性
 - [ ] Stage 0.4 — crop/zoom 需求统计（决定动作空间）
-- [ ] Stage 1 — 检索动作空间与执行器
+- [x] Stage 1 — 检索动作空间与执行器（typed actions + executor + BM25/dense/CLIP 检索 + build_index）
 - [ ] Stage 2 — Grounding Verifiers
 - [ ] Stage 3 — 训练数据生成（ETBench-Open）
 - [ ] Stage 4 — PRM 三阶段训练
-- [ ] Stage 5 — MCTS 搜索（固定 λ）
-- [ ] Stage 6 — Self-Adjusting Bandit
+- [~] Stage 5 — MCTS 搜索（固定 λ）— **框架已实现**（node/UCT+modality bonus/四阶段循环，mock 验证通过）；真实验收（benchmark 主表）待 PRM
+- [~] Stage 6 — Self-Adjusting Bandit — **框架已实现**（Algorithm 1，单 query 独立，mock 验证通过）；A6 消融待真实 PRM
 - [ ] Stage 7 — 评测与消融
+
+> PRM 部分（Stage 2/3/4 + prm/ 下的训练代码）尚未实现；搜索框架通过可插拔的
+> `TrajectoryScorer` 接口先用 mock/启发式 scorer 运行，PRM 训好后直接替换。
 
 > ⚠️ Stage 0（Pilot）是 go/no-go 决策阶段。四个 pilot 全过才进入 Stage 1；任何一个亮红灯，暂停与导师讨论。

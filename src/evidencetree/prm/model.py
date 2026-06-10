@@ -161,3 +161,26 @@ class VisualPRMScorer:
         no_id = self._tokenizer(" No", add_special_tokens=False).input_ids[-1]
         pair = torch.softmax(torch.stack([logits[no_id], logits[yes_id]]), dim=0)
         return float(pair[1].item())
+
+
+class HeuristicOverlapScorer:
+    """Framework-debugging scorer — NOT a PRM.
+
+    Scores a trajectory by how well the evidence supports the final answer:
+    token coverage of the answer by the collected observations, plus a small
+    bonus for having retrieved anything at all. Deterministic and offline, it
+    gives the MCTS meaningful guidance signal (prefer evidence-backed answers
+    over blind ones) before any PRM exists, so the search framework can be
+    exercised and demoed end-to-end. Replaced by the trained PRM in Stage 4+.
+    """
+
+    EVIDENCE_BONUS = 0.2
+
+    def score(self, trajectory: Trajectory, **kwargs: Any) -> float:
+        observations = " ".join(s.observation for s in trajectory.steps).lower()
+        answer_tokens = [t for t in trajectory.final_answer.lower().split() if t]
+        if not answer_tokens:
+            return 0.0
+        coverage = sum(t in observations for t in answer_tokens) / len(answer_tokens)
+        bonus = self.EVIDENCE_BONUS if observations.strip() else 0.0
+        return min(1.0, bonus + (1.0 - self.EVIDENCE_BONUS) * coverage)

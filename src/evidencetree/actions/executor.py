@@ -1,19 +1,122 @@
-"""Action executor: given (action, state) -> updated evidence_bundle.
+"""Action executor: (state, action) -> new state with an updated evidence bundle.
 
-Placeholder — implemented in **Stage 1**.
+All retrieval is OFFLINE on local indices — no web API (implementation report
+§4.1.4). The executor is the single place where actions touch retrievers, so
+the search code never needs to know how an action is carried out.
 
-The executor runs an action via the retrievers and accumulates results into an
-``evidence_bundle`` that grows monotonically across a trajectory (search A, then
-search B -> bundle contains both).
+Extensibility: new action types (crop / zoom / focus, pending Stage 0.4) plug
+in via :meth:`ActionExecutor.register_handler` — no changes to existing code.
 """
 
 from __future__ import annotations
 
-_STAGE = "Stage 1 — 检索动作空间与执行器"
+from typing import Callable, Protocol
+
+from .action_space import (
+    Action,
+    AnswerAction,
+    Evidence,
+    ImageSearchAction,
+    SearchState,
+    TextSearchAction,
+)
+
+
+class TextRetriever(Protocol):
+    """Anything with ``search(query, top_k) -> list[RetrievalHit]``."""
+
+    def search(self, query: str, top_k: int = 5): ...
+
+
+class ImageRetriever(Protocol):
+    """Anything with ``search_image(image_path, region, top_k) -> hits``."""
+
+    def search_image(self, image_path: str, region=None, top_k: int = 5): ...
+
+
+Handler = Callable[[SearchState, Action], SearchState]
 
 
 class ActionExecutor:
-    def __init__(self, *args, **kwargs) -> None:
-        raise NotImplementedError(
-            f"ActionExecutor is not implemented yet (planned for {_STAGE})."
+    """Executes typed actions against local retrievers."""
+
+    def __init__(
+        self,
+        text_retriever: TextRetriever | None = None,
+        image_retriever: ImageRetriever | None = None,
+        top_k: int = 5,
+    ) -> None:
+        self.text_retriever = text_retriever
+        self.image_retriever = image_retriever
+        self.top_k = top_k
+        self._handlers: dict[type[Action], Handler] = {
+            TextSearchAction: self._exec_text_search,
+            ImageSearchAction: self._exec_image_search,
+            AnswerAction: self._exec_answer,
+        }
+
+    # ------------------------------------------------------------------ #
+    def register_handler(self, action_cls: type[Action], handler: Handler) -> None:
+        """Plug in a handler for a new action type (e.g. crop/zoom later)."""
+        self._handlers[action_cls] = handler
+
+    def execute(self, state: SearchState, action: Action) -> SearchState:
+        """Run ``action`` from ``state``; return the successor state."""
+        if state.is_terminal:
+            raise ValueError("Cannot execute an action from a terminal state.")
+        handler = self._handlers.get(type(action))
+        if handler is None:
+            raise TypeError(
+                f"No handler registered for action type {type(action).__name__}. "
+                "Use register_handler() to add one."
+            )
+        return handler(state, action)
+
+    # ------------------------------------------------------------------ #
+    # Built-in handlers
+    # ------------------------------------------------------------------ #
+    def _exec_text_search(self, state: SearchState, action: Action) -> SearchState:
+        assert isinstance(action, TextSearchAction)
+        if self.text_retriever is None:
+            raise RuntimeError("ActionExecutor has no text_retriever configured.")
+        hits = self.text_retriever.search(action.query, top_k=self.top_k)
+        return state.advanced(action, self._hits_to_evidence(state, action, hits))
+
+    def _exec_image_search(self, state: SearchState, action: Action) -> SearchState:
+        assert isinstance(action, ImageSearchAction)
+        if self.image_retriever is None:
+            raise RuntimeError(
+                "ActionExecutor has no image_retriever configured "
+                "(image_search needs a CLIP-style index, see retrievers.py)."
+            )
+        image_path = action.image_path or state.image_path
+        if image_path is None:
+            raise ValueError("image_search with no image: neither the action nor "
+                             "the state carries an image_path.")
+        hits = self.image_retriever.search_image(
+            image_path, region=action.region, top_k=self.top_k
         )
+        return state.advanced(action, self._hits_to_evidence(state, action, hits))
+
+    def _exec_answer(self, state: SearchState, action: Action) -> SearchState:
+        assert isinstance(action, AnswerAction)
+        return state.answered(action)
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _hits_to_evidence(state: SearchState, action: Action, hits) -> list[Evidence]:
+        base = len(state.evidence)
+        step = len(state.actions_taken)  # index this action will occupy
+        return [
+            Evidence(
+                evidence_id=f"e{base + i}",
+                step_index=step,
+                source_action=action.action_type,
+                doc_id=h.doc_id,
+                text=h.text,
+                title=getattr(h, "title", ""),
+                image_path=getattr(h, "image_path", None),
+                score=float(getattr(h, "score", 0.0)),
+            )
+            for i, h in enumerate(hits)
+        ]

@@ -1,8 +1,11 @@
-"""Tests for BM25Retriever."""
+"""Tests for BM25Retriever and DenseRetriever (fake encoder — no downloads)."""
+
+import re
+import zlib
 
 import pytest
 
-from evidencetree.actions.retrievers import BM25Retriever
+from evidencetree.actions.retrievers import BM25Retriever, DenseRetriever
 from evidencetree.eval.benchmarks import Document, load_infoseek
 
 
@@ -47,3 +50,43 @@ def test_bm25_retrieves_supporting_doc_for_mock_queries():
             hit_rate += 1
     # The supporting doc shares salient tokens (entity name) -> high recall@3.
     assert hit_rate / len(queries) >= 0.8
+
+
+# --------------------------------------------------------------------------- #
+# DenseRetriever (deterministic fake encoder; faiss only, no model download)
+# --------------------------------------------------------------------------- #
+def _hash_encoder(items):
+    """Deterministic bag-of-hashed-tokens embedding (64-dim)."""
+    import numpy as np
+
+    vecs = np.zeros((len(items), 64), dtype="float32")
+    for i, text in enumerate(items):
+        for tok in re.findall(r"[a-z0-9]+", str(text).lower()):
+            vecs[i, zlib.crc32(tok.encode()) % 64] += 1.0
+    return vecs
+
+
+def test_dense_retriever_finds_relevant_doc():
+    retriever = DenseRetriever(encoder=_hash_encoder).build(_corpus())
+    hits = retriever.search("Eiffel Tower Paris", top_k=2)
+    assert hits[0].doc_id == "d0"
+    assert hits[0].score >= hits[1].score
+
+
+def test_dense_retriever_save_load_roundtrip(tmp_path):
+    retriever = DenseRetriever(encoder=_hash_encoder).build(_corpus())
+    retriever.save(tmp_path / "index")
+
+    loaded = DenseRetriever.load(tmp_path / "index", encoder=_hash_encoder)
+    assert len(loaded) == len(retriever)
+    assert loaded.search("mountain Japan Fuji", top_k=1)[0].doc_id == "d1"
+
+
+def test_dense_retriever_search_before_build_raises():
+    with pytest.raises(RuntimeError):
+        DenseRetriever(encoder=_hash_encoder).search("anything")
+
+
+def test_dense_retriever_empty_corpus_raises():
+    with pytest.raises(ValueError):
+        DenseRetriever(encoder=_hash_encoder).build([])
