@@ -14,13 +14,13 @@
 ## 快速开始
 
 ```bash
-# 1. 创建虚拟环境（conda 有权限问题，用 venv）
-python3 -m venv RAG
-source RAG/bin/activate          # Windows: RAG\Scripts\activate
+# 1. 激活 conda 虚拟环境 RAG（位于 /opt/anaconda3/envs/RAG，Python 3.11）
+conda activate RAG
+# 若 shell 里 conda activate 不可用，直接用环境内解释器也行：
+#   /opt/anaconda3/envs/RAG/bin/python ...
 
-# 2. 安装依赖（本地冒烟只需 base）
-pip install -U pip
-pip install -r requirements/base.txt
+# 2. 安装依赖（本地装到 models 档；server 档仅 GPU 服务器需要）
+pip install -r requirements/models.txt
 pip install -e .
 
 # 3. 跑通第一步 Stage 0.1（mock 模式，无需 GPU / 无需下载模型）

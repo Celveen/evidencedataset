@@ -166,9 +166,24 @@ _MOCK_FACTS: list[dict[str, str]] = [
      "fact": "The Pyramids of Giza are ancient monumental tombs on the Giza plateau in Egypt."},
 ]
 
-_ATTR_TO_QUESTION = {
-    "city": "In which city is the {entity} located?",
-    "country": "In which country is the {entity} located?",
+# Several paraphrase templates per attribute so the mock set can grow to
+# len(facts) * len(templates) queries — enough samples (~100) for the smoke
+# run's correlation estimate to sit near its configured target.
+_ATTR_TO_QUESTIONS = {
+    "city": [
+        "In which city is the {entity} located?",
+        "Which city is home to the {entity}?",
+        "The {entity} can be found in which city?",
+        "Name the city where the {entity} stands.",
+        "What city hosts the {entity}?",
+    ],
+    "country": [
+        "In which country is the {entity} located?",
+        "Which country is home to the {entity}?",
+        "The {entity} can be found in which country?",
+        "Name the country where the {entity} is found.",
+        "What country hosts the {entity}?",
+    ],
 }
 
 # Filler documents (distractors) to make retrieval non-trivial.
@@ -186,6 +201,7 @@ def _mock_infoseek(n: int, seed: int) -> tuple[list[Query], list[Document]]:
     corpus: list[Document] = []
     queries: list[Query] = []
 
+    n_templates = min(len(v) for v in _ATTR_TO_QUESTIONS.values())
     for i, fact in enumerate(_MOCK_FACTS):
         corpus.append(
             Document(
@@ -194,15 +210,16 @@ def _mock_infoseek(n: int, seed: int) -> tuple[list[Query], list[Document]]:
                 text=f"{fact['entity']}. {fact['fact']}",
             )
         )
-        question = _ATTR_TO_QUESTION[fact["attr"]].format(entity=fact["entity"])
-        queries.append(
-            Query(
-                query_id=f"q_{i}",
-                question=question,
-                gold_answers=[fact["value"]],
-                metadata={"supporting_doc": f"doc_{i}", "attr": fact["attr"]},
+        for v in range(n_templates):
+            question = _ATTR_TO_QUESTIONS[fact["attr"]][v].format(entity=fact["entity"])
+            queries.append(
+                Query(
+                    query_id=f"q_{i}_{v}",
+                    question=question,
+                    gold_answers=[fact["value"]],
+                    metadata={"supporting_doc": f"doc_{i}", "attr": fact["attr"]},
+                )
             )
-        )
 
     for j, text in enumerate(_MOCK_DISTRACTORS):
         corpus.append(Document(doc_id=f"distractor_{j}", text=text))

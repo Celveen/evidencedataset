@@ -9,7 +9,7 @@
 ### 本地冒烟（mock，无需 GPU / 无需下载）
 
 ```bash
-source RAG/bin/activate
+conda activate RAG
 python pilot/stage0_1_visualprm_diagnosis.py --config configs/pilot.yaml --mock
 ```
 

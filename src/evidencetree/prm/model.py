@@ -18,6 +18,7 @@ isolated in ``_score_real`` so only that method needs adjusting.
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -93,18 +94,25 @@ class VisualPRMScorer:
     # Mock scoring
     # ------------------------------------------------------------------ #
     def _score_mock(self, trajectory: Trajectory, **kwargs: Any) -> float:
-        """Blend an (eval-only) outcome hint with noise at a controlled ratio.
-
-        Expected Spearman(score, outcome) ~= mock_correlation. Used to emulate the
-        report's hypothesis that a *frozen* VisualPRM correlates weakly with
-        outcome (so Stage 0.1 prints a "needs fine-tuning" verdict).
+        """Blend an (eval-only) outcome hint with noise, calibrated so that
+        Spearman(score, outcome) ~= mock_correlation for a balanced binary
+        outcome. Used to emulate the report's hypothesis that a *frozen*
+        VisualPRM correlates weakly with outcome (so Stage 0.1 prints a
+        "needs fine-tuning" verdict). At mock sample sizes (n~20) the
+        empirical coefficient still fluctuates around this target.
         """
         noise = self._rng.random()
         hint = kwargs.get("outcome_hint")
         if hint is None:
             return noise
-        rho = self.mock_correlation
-        return max(0.0, min(1.0, rho * float(hint) + (1.0 - rho) * noise))
+        # For score = a*y + (1-a)*U(0,1) with balanced binary y, the
+        # point-biserial coefficient is a/2 / sqrt((1-a)^2/12 + a^2/4);
+        # invert it so the requested mock_correlation is the *resulting*
+        # coefficient, not the raw blend weight.
+        rho = min(max(self.mock_correlation, 0.0), 0.999)
+        c = rho / math.sqrt(3.0 * (1.0 - rho * rho))
+        a = c / (1.0 + c)
+        return max(0.0, min(1.0, a * float(hint) + (1.0 - a) * noise))
 
     # ------------------------------------------------------------------ #
     # Real scoring (VisualPRM-8B)

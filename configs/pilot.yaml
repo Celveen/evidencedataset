@@ -1,7 +1,7 @@
 # Stage 0.1 — VisualPRM failure-mode diagnosis config.
 # Run: python pilot/stage0_1_visualprm_diagnosis.py --config configs/pilot.yaml [--mock]
 
-# Number of InfoSeek queries to diagnose (report uses 1000; mock has ~20).
+# Number of InfoSeek queries to diagnose (report uses 1000; mock caps at ~100).
 n_queries: 1000
 
 # Data
