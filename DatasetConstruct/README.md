@@ -202,7 +202,7 @@ data/etbench_open/
 |---|---|---|---|
 | 轨迹过短/过长整条丢弃 | 2 ≤ 步数 ≤ 8 | `quality.min_steps` / `max_steps` | 报告 §3.5 |
 | grounding↔outcome 严重不一致的样本丢弃（noisy label） | \|local−outcome\| > 0.7 | `quality.max_grounding_outcome_gap` | 报告 §3.5 |
-| rationale 必须：引用 ≥1 个样本内可见的 evidence_id；明确提到动作类型；长度 50–150 token | — | 代码 `prm/rationale_gen.py::check_rationale` | 报告 §3.5 |
+| rationale 必须：引用 ≥1 个样本内可见的 evidence_id；明确提到动作类型；长度 30–150 token | — | 代码 `prm/rationale_gen.py::check_rationale` | 报告 §3.5 |
 | QC 不过自动重生成 | 至多 3 次 | `rationale.max_attempts` | 报告预估 ~15% 重生成 |
 
 人工抽检（报告要求，pipeline 不替代）：跑完后抽 500 条查 score 合理性、

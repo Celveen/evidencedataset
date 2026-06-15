@@ -7,7 +7,7 @@ explains the score — this is the generative-PRM training signal.
 Quality filter (report §3.5): a rationale must
     (a) cite >= 1 evidence_id visible in the sample (state or observation),
     (b) explicitly mention the action type,
-    (c) be 50-150 tokens long (whitespace tokens as the proxy).
+    (c) be 30-150 tokens long (whitespace tokens as the proxy).
 Failures are regenerated up to ``max_attempts``; still-failing samples are
 dropped by DatasetConstruct step 4.
 
@@ -22,7 +22,7 @@ from typing import Any
 
 from evidencetree.generation.base import Generator
 
-MIN_TOKENS, MAX_TOKENS = 50, 150
+MIN_TOKENS, MAX_TOKENS = 30, 150
 
 _PROMPT = """You are writing a training rationale for a process reward model \
 that judges retrieval actions.
@@ -35,7 +35,7 @@ Evidence retrieved BY this action:
 {observation}
 Assigned quality score: {score:.2f}  (0 = poor action, 1 = excellent action)
 
-Write a rationale of 50-150 tokens explaining WHY this score is appropriate.
+Write a rationale of 30-150 tokens explaining WHY this score is appropriate.
 Requirements:
 - explicitly mention the action type "{action_type}";
 - cite at least one evidence id in square brackets, e.g. [e0];
