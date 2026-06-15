@@ -56,6 +56,7 @@ src/evidencetree/
 ├── generation/   可配置生成后端（mock / HF / API）
 └── utils/        config / logging
 pilot/            Stage 0 Pilot 脚本（最先做，go/no-go 决策）
+DatasetConstruct/ ETBench-Open 数据集构建 pipeline（Stage 3，API policy + 强 LLM）
 scripts/          各阶段入口 CLI
 configs/          超参配置
 tests/            单元测试
@@ -69,8 +70,8 @@ tests/            单元测试
 - [ ] Stage 0.3 — 50 样本人工标注一致性
 - [ ] Stage 0.4 — crop/zoom 需求统计（决定动作空间）
 - [x] Stage 1 — 检索动作空间与执行器（typed actions + executor + BM25/dense/CLIP 检索 + build_index）
-- [ ] Stage 2 — Grounding Verifiers
-- [ ] Stage 3 — 训练数据生成（ETBench-Open）
+- [~] Stage 2 — Grounding Verifiers — **接口 + lexical/API-judge 后端已实现**；正式 cross-encoder/CLIP verifier 待 GPU 服务器（Stage 0.3 一致性验证后替换）
+- [~] Stage 3 — 训练数据生成（ETBench-Open）— **构建 pipeline 已实现**（[DatasetConstruct/](DatasetConstruct/README.md)，4 步全流程 + tree-level credit + rationale QC，mock 跑通）；真实数据生成待 API key + 原始数据
 - [ ] Stage 4 — PRM 三阶段训练
 - [~] Stage 5 — MCTS 搜索（固定 λ）— **框架已实现**（node/UCT+modality bonus/四阶段循环，mock 验证通过）；真实验收（benchmark 主表）待 PRM
 - [~] Stage 6 — Self-Adjusting Bandit — **框架已实现**（Algorithm 1，单 query 独立，mock 验证通过）；A6 消融待真实 PRM

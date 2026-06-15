@@ -1,14 +1,28 @@
-"""External-API generation backend (Claude / GPT-4o).
+"""External-API generation backend (Claude / GPT-4o / OpenAI-compatible VLMs).
 
-Reads the API key from the environment (``ANTHROPIC_API_KEY`` /
-``OPENAI_API_KEY``). Per the implementation report, the only sanctioned external
-API call is offline rationale generation; reusing this backend for vanilla-RAG
-generation during the pilot is fine. NEVER use it for the retrieval step.
+Sanctioned uses per the implementation report: offline rationale generation
+(Stage 3) and the API policy VLM during dataset construction. NEVER use this
+for the retrieval step — retrieval stays on local indices.
+
+Key lookup: the environment variable named by ``extra.api_key_env``, falling
+back to ``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY`` per provider.
+
+``GenerationConfig.extra`` knobs:
+    base_url    — OpenAI-compatible endpoint (e.g. DashScope for Qwen-VL:
+                  https://dashscope.aliyuncs.com/compatible-mode/v1)
+    api_key_env — env var holding the key (e.g. DASHSCOPE_API_KEY)
+
+Multimodal: pass ``image_path=...`` to :meth:`generate` and the image is
+attached base64-encoded (anthropic image block / openai image_url data URI).
+Leave it None for text-only models.
 """
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 import os
+from pathlib import Path
 from typing import Any, Sequence
 
 from .base import Generator, GenerationConfig
@@ -16,6 +30,10 @@ from .base import Generator, GenerationConfig
 _DEFAULT_MODELS = {
     "anthropic": "claude-opus-4-8",
     "openai": "gpt-4o",
+}
+_DEFAULT_KEY_ENVS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
 }
 
 
@@ -26,44 +44,87 @@ class APIGenerator(Generator):
         self.model = config.model or _DEFAULT_MODELS.get(self.provider)
         if self.model is None:
             raise ValueError(f"No default model for provider {self.provider!r}.")
+        self.base_url = config.extra.get("base_url")
+        self.api_key_env = (
+            config.extra.get("api_key_env") or _DEFAULT_KEY_ENVS.get(self.provider, "")
+        )
         self._client = self._make_client()
 
     def _make_client(self):
+        api_key = os.environ.get(self.api_key_env)
+        if not api_key:
+            raise EnvironmentError(
+                f"{self.api_key_env} not set (provider={self.provider!r}). "
+                "Fill it in DatasetConstruct/.env or export it."
+            )
+        timeout = float(self.config.extra.get("timeout", 120))
+        max_retries = int(self.config.extra.get("max_retries", 2))
         if self.provider == "anthropic":
-            if "ANTHROPIC_API_KEY" not in os.environ:
-                raise EnvironmentError("ANTHROPIC_API_KEY not set.")
             import anthropic
 
-            return anthropic.Anthropic()
+            return anthropic.Anthropic(
+                api_key=api_key, timeout=timeout, max_retries=max_retries
+            )
         if self.provider == "openai":
-            if "OPENAI_API_KEY" not in os.environ:
-                raise EnvironmentError("OPENAI_API_KEY not set.")
             import openai
 
-            return openai.OpenAI()
+            return openai.OpenAI(
+                api_key=api_key, base_url=self.base_url,
+                timeout=timeout, max_retries=max_retries,
+            )
         raise ValueError(f"Unknown provider {self.provider!r}.")
 
+    # ------------------------------------------------------------------ #
     def generate(
         self, question: str, context_docs: Sequence[str], **kwargs: Any
     ) -> str:
-        user = self._build_prompt(question, context_docs)
+        user_text = self._build_prompt(question, context_docs)
+        image_path = kwargs.get("image_path")
         if self.provider == "anthropic":
+            content: list[dict] = []
+            if image_path:
+                media_type, data = _read_image_b64(image_path)
+                content.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                })
+            content.append({"type": "text", "text": user_text})
             resp = self._client.messages.create(
                 model=self.model,
                 max_tokens=self.config.max_new_tokens,
                 temperature=self.config.temperature,
                 system=self.config.system_prompt,
-                messages=[{"role": "user", "content": user}],
+                messages=[{"role": "user", "content": content}],
             )
             return resp.content[0].text.strip()
-        # openai
+
+        # openai / OpenAI-compatible
+        if image_path:
+            media_type, data = _read_image_b64(image_path)
+            user_content: Any = [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:{media_type};base64,{data}"}},
+                {"type": "text", "text": user_text},
+            ]
+        else:
+            user_content = user_text
         resp = self._client.chat.completions.create(
             model=self.model,
             max_tokens=self.config.max_new_tokens,
             temperature=self.config.temperature,
             messages=[
                 {"role": "system", "content": self.config.system_prompt},
-                {"role": "user", "content": user},
+                {"role": "user", "content": user_content},
             ],
+            # Provider-specific passthrough, e.g. DeepSeek reasoning models
+            # need {"thinking": {"type": "disabled"}} or thinking tokens eat
+            # the whole max_tokens budget and content comes back empty.
+            extra_body=self.config.extra.get("extra_body"),
         )
-        return resp.choices[0].message.content.strip()
+        return (resp.choices[0].message.content or "").strip()
+
+
+def _read_image_b64(path: str) -> tuple[str, str]:
+    media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
+    data = base64.standard_b64encode(Path(path).read_bytes()).decode("ascii")
+    return media_type, data

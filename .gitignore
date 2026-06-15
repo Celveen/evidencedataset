@@ -34,6 +34,11 @@ wandb/
 .env
 *.key
 
+# Local backup copies / archives (never push these)
+*副本/
+*_副本/
+*.zip
+
 # Claude Code local settings
 .claude/settings.local.json
 

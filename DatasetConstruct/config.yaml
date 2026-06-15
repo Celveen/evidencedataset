@@ -1,0 +1,76 @@
+# ETBench-Open 数据集构建配置。所有路径相对仓库根目录。
+# 用法见 DatasetConstruct/README.md；mock 冒烟:
+#   python DatasetConstruct/run_pipeline.py --mock
+
+benchmark: infoseek
+
+data:
+  data_dir: data/corpus/infoseek     # 原始数据（queries/corpus 两个 JSONL）
+  n_queries: 100                     # 先小规模试跑；全量 InfoSeek ~15K
+  seed: 0
+
+mcts:                                # Step 1 rollout 设置（语义同 configs/mcts.yaml 的 search 块）
+  rollouts: 10                       # P —— 每个 query 至多 ~10 条 trajectory
+  max_depth: 3
+  top_k_children: 3
+  lam: 0.3
+  early_stop_q: 2.0                  # >1 即关闭早停：数据生成要多样轨迹，不要提前停
+  seed: 0
+
+policy:                              # Step 1 policy VLM（API 形式）
+  backend: api                       # api | mock（mock = 本地冒烟，无 API 调用）
+  provider: openai                   # openai 同时覆盖一切 OpenAI 兼容端点
+  model: qwen3-vl-flash              # weak policy（qwen2.5-vl 已在 DashScope 下线）
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_env: DASHSCOPE_API_KEY     # 在 DatasetConstruct/.env 里填
+  max_new_tokens: 256                # 动作提议为多行 JSON，128 容易截断
+  temperature: 0.7                   # 采样温度 >0，保证 rollout 间多样性
+  mock_accuracy: 0.6                 # 仅 mock 模式生效
+  mock_seed: 0
+
+retriever:
+  top_k: 5
+
+verifier:                            # Step 2 grounding verifier
+  backend: lexical                   # lexical（离线、免费）| api（LLM judge）
+  alpha: 0.5                         # score = alpha*local + (1-alpha)*outcome
+  generation:                        # 仅 backend=api 时使用
+    backend: api
+    provider: openai                 # DeepSeek 走 OpenAI 兼容端点
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    max_new_tokens: 8
+    temperature: 0.0
+    timeout: 120
+    extra_body:                      # v4-pro 是推理模型：必须禁思考，否则
+      thinking: {type: disabled}     # thinking token 吃光预算、content 为空
+
+rationale:                           # Step 3 强 LLM rationale 生成
+  backend: api                       # api | mock（mock = 模板，仅冒烟）
+  concurrency: 8                     # 并发请求数（DeepSeek 支持并发）
+  generation:
+    backend: api
+    provider: openai                 # DeepSeek 走 OpenAI 兼容端点
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    max_new_tokens: 300
+    temperature: 0.3
+    timeout: 120
+    extra_body:                      # 禁用思考（见上）
+      thinking: {type: disabled}
+  max_attempts: 3                    # QC 不过重生成次数（报告预估 ~15% 重生成）
+
+quality:                             # Step 4 质量过滤
+  min_steps: 2                       # 轨迹过短拒绝（报告 §3.5）
+  max_steps: 8                       # 轨迹过长拒绝
+  max_grounding_outcome_gap: 0.7     # |local - outcome| 超过即视为 noisy label 丢弃
+  dedupe_within_query: true          # 同 query 内动作序列完全相同的轨迹去重
+  val_fraction: 0.05                 # 按 query 划 train/val（同 query 不跨集）
+
+output:                              # 中间与最终产物（mock 模式自动加 mock_ 前缀）
+  trajectories: data/trajectories/infoseek_trajectories.jsonl   # Step 1
+  scored: data/trajectories/infoseek_scored.jsonl               # Step 2
+  rationales: data/trajectories/infoseek_rationales.jsonl       # Step 3
+  dataset_dir: data/etbench_open                                # Step 4（train/val/stats）

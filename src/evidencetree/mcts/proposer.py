@@ -148,7 +148,7 @@ class LLMProposer:
             question=state.question, evidence=evidence, k=k
         )
         try:
-            raw = self.generator.generate(prompt, [])
+            raw = self.generator.generate(prompt, [], image_path=state.image_path)
             actions = self._parse(raw, state)
         except Exception:
             actions = []
@@ -158,7 +158,10 @@ class LLMProposer:
         return [a for a in actions if a not in taken][:k]
 
     def propose_answer(self, state: SearchState) -> AnswerAction:
-        return self.fallback.propose_answer(state)
+        text = self.generator.generate(
+            state.question, state.evidence_texts(), image_path=state.image_path
+        )
+        return AnswerAction(text=text)
 
     # ------------------------------------------------------------------ #
     @staticmethod

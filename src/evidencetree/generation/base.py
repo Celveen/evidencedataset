@@ -62,7 +62,14 @@ class Generator(ABC):
         """Return an answer string given a question and retrieved context."""
 
     def _build_prompt(self, question: str, context_docs: Sequence[str]) -> str:
-        """Assemble a standard RAG prompt from context + question."""
+        """Assemble a standard RAG prompt from context + question.
+
+        With no context docs the question is passed through verbatim, so
+        callers (action proposers, rationale prompts) can use the backend as a
+        plain instruction-following LLM.
+        """
+        if not context_docs:
+            return question
         context = "\n".join(f"[{i + 1}] {d}" for i, d in enumerate(context_docs))
         return (
             f"Context:\n{context}\n\n"

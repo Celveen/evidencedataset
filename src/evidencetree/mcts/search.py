@@ -79,6 +79,8 @@ class RolloutRecord:
     reward: float
     answer: str | None
     depth: int
+    state: SearchState | None = None  # terminal state (full trajectory; used
+                                      # by dataset construction & Stage 0.2)
 
 
 @dataclass
@@ -169,6 +171,7 @@ class MCTSSearcher:
                     t=t, lam=lam, reward=reward,
                     answer=terminal_state.final_answer,
                     depth=terminal_state.depth,
+                    state=terminal_state,
                 )
             )
             if reward > best_reward:
