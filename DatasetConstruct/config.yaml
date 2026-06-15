@@ -32,7 +32,11 @@ retriever:
   top_k: 5
 
 verifier:                            # Step 2 grounding verifier
-  backend: lexical                   # lexical（离线、免费）| api（LLM judge）
+  backend: lexical                   # text_search 后端: lexical（离线免费）| api（LLM judge）
+  image_backend: clip                # image_search 后端: clip（CLIP 图文对齐）| neutral（占位 0.5）
+  clip_model: clip-ViT-B-32          # CLIP 模型（服务器可上 OpenCLIP ViT-L）
+  cos_lo: 0.15                       # CLIP cosine→[0,1] 映射下界（经验校准，可调）
+  cos_hi: 0.32                       # 上界；matched 图文对约 0.30
   alpha: 0.5                         # score = alpha*local + (1-alpha)*outcome
   generation:                        # 仅 backend=api 时使用
     backend: api

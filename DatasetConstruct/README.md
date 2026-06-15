@@ -136,6 +136,9 @@ mock 模式的产物自动加 `mock_` 前缀（Step 4 则写进 `mock/` 子目�
   序列完全相同的去重，开关 `quality.dedupe_within_query`）。
 - `gen_reward` 是生成期的引导分（启发式 scorer），**不是训练标签**。
 - **断点续跑**：重跑时已有 `query_id` 自动跳过。
+- `image_search` 步会额外带 `"region"`（归一化 bbox 或 null）与 `"image_path"`
+  （实际作为检索 query 的图），供 Step 2 的 CLIP verifier 打分；其
+  `action_input` 用 `describe()` 形式（含 region），保证不同聚焦算不同节点。
 
 ### Step 2 → `data/trajectories/infoseek_scored.jsonl`
 
@@ -230,9 +233,22 @@ API 调用量级（真实模式）：
 
 ## verifier 现状（诚实声明）
 
-- `lexical`（默认）：query↔question 的内容词对齐度，离线免费、可复现；
-  **image_search 暂返回中性 0.5**（词法无法判断图像 query）。
-- `api`：LLM judge 打 graded 分，覆盖 image_search，但有成本。
-- 报告 Stage 2 的正式方案（本地 cross-encoder + CLIP matching）待 GPU 服务器
-  上实现后替换——接口已固定为 `GroundingVerifier.score(...)`，到时只加一个
-  backend，不动 pipeline。Stage 0.3（50 样本人工标注一致性）通过后再放量 Step 2。
+verifier 按动作类型分两路（`config.yaml` 的 `verifier` 块）：
+
+**text_search**（`backend`）：
+- `lexical`（默认）：query↔question 的内容词对齐度，离线免费、可复现（简化版，
+  报告正式方案是本地 cross-encoder，待补）。
+- `api`：LLM judge 打 graded 分，但有成本。
+
+**image_search**（`image_backend`）：
+- `clip`（**已实现**，正式版）：CLIP 算"query 图像/region ↔ question 视觉实体"
+  的对齐度（报告 §3.2），graded 0–1。cosine 经 `[cos_lo, cos_hi]` 线性映射到
+  [0,1]（经验校准，可调；CLIP ViT-B/32 matched 图文对约 0.30）。**没有图像时
+  （文本-only 跑）自动退回中性 0.5。**
+- `neutral`：占位 0.5（不加载 CLIP，mock/无图场景用）。
+
+> **依赖**：`clip` 后端需要 `sentence-transformers` + `pillow`（已在
+> `requirements/models.txt`）。服务器可把 `clip_model` 换成 OpenCLIP ViT-L，
+> 或注入与 `ClipImageRetriever` 共享的 CLIP 实例避免重复加载。
+> **仍待办**：`crop`/`zoom`/`focus` 的 detection/OCR verifier（动作本身待
+> Stage 0.4 决定）；Stage 0.3（50 样本人工一致性）通过后再全量放量 Step 2。

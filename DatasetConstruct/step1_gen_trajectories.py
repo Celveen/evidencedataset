@@ -63,25 +63,35 @@ def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
     state = record.state
     steps = []
     for i, action in enumerate(state.actions_taken):
-        action_input = getattr(action, "query", None) or getattr(action, "text", "") or ""
-        steps.append(
-            {
-                "step_index": i,
-                "action_type": action.action_type,
-                "action_input": str(action_input),
-                "evidence": [
-                    {
-                        "evidence_id": e.evidence_id,
-                        "doc_id": e.doc_id,
-                        "title": e.title,
-                        "text": e.text,
-                        "score": e.score,
-                    }
-                    for e in state.evidence
-                    if e.step_index == i
-                ],
-            }
+        # Fall back to describe() so image_search (no query/text) still yields a
+        # non-empty, region-distinguishing action_input — the tree-credit prefix
+        # key is (action_type, action_input), so different regions must differ.
+        action_input = (
+            getattr(action, "query", None)
+            or getattr(action, "text", "")
+            or action.describe()
         )
+        step = {
+            "step_index": i,
+            "action_type": action.action_type,
+            "action_input": str(action_input),
+            "evidence": [
+                {
+                    "evidence_id": e.evidence_id,
+                    "doc_id": e.doc_id,
+                    "title": e.title,
+                    "text": e.text,
+                    "score": e.score,
+                }
+                for e in state.evidence
+                if e.step_index == i
+            ],
+        }
+        if action.action_type == "image_search":
+            region = getattr(action, "region", None)
+            step["region"] = list(region) if region is not None else None
+            step["image_path"] = getattr(action, "image_path", None) or state.image_path
+        steps.append(step)
     final_answer = state.final_answer or ""
     return {
         "traj_id": f"{query.query_id}#t{t_index}",

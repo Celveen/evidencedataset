@@ -21,7 +21,7 @@ from common import load_env, read_jsonl, resolve, tagged, write_jsonl
 
 from evidencetree.generation import build_generator
 from evidencetree.prm.data_gen import label_steps
-from evidencetree.prm.verifiers import GroundingVerifier
+from evidencetree.prm.verifiers import ClipGroundingScorer, GroundingVerifier
 from evidencetree.utils import config as cfgutil
 from evidencetree.utils import get_logger
 
@@ -34,7 +34,18 @@ def build_verifier(cfg: dict[str, Any], mock: bool) -> GroundingVerifier:
     generator = None
     if backend == "api":
         generator = build_generator(v_cfg.get("generation", {}))
-    return GroundingVerifier(backend=backend, generator=generator)
+
+    # image_search grounding: CLIP scorer (real mode only; mock keeps the
+    # neutral-0.5 fallback so smoke tests need no model download).
+    image_scorer = None
+    if not mock and v_cfg.get("image_backend", "neutral") == "clip":
+        image_scorer = ClipGroundingScorer(
+            model_name=v_cfg.get("clip_model", "clip-ViT-B-32"),
+            device=v_cfg.get("device"),
+            cos_lo=float(v_cfg.get("cos_lo", 0.15)),
+            cos_hi=float(v_cfg.get("cos_hi", 0.32)),
+        )
+    return GroundingVerifier(backend=backend, generator=generator, image_scorer=image_scorer)
 
 
 def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
