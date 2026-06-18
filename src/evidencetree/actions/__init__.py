@@ -6,12 +6,20 @@ from .action_space import (
     AnswerAction,
     Evidence,
     ImageSearchAction,
+    ImageToTextAction,
     SearchState,
     TextSearchAction,
+    TextToImageAction,
     register_action,
 )
 from .executor import ActionExecutor
-from .retrievers import BM25Retriever, ClipImageRetriever, DenseRetriever, RetrievalHit
+from .retrievers import (
+    BM25Retriever,
+    ClipImageRetriever,
+    CrossModalCLIPRetriever,
+    DenseRetriever,
+    RetrievalHit,
+)
 
 __all__ = [
     "ACTION_REGISTRY",
@@ -20,11 +28,14 @@ __all__ = [
     "AnswerAction",
     "BM25Retriever",
     "ClipImageRetriever",
+    "CrossModalCLIPRetriever",
     "DenseRetriever",
     "Evidence",
     "ImageSearchAction",
+    "ImageToTextAction",
     "RetrievalHit",
     "SearchState",
     "TextSearchAction",
+    "TextToImageAction",
     "register_action",
 ]

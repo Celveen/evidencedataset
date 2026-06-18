@@ -186,19 +186,22 @@ class GroundingVerifier:
         """Graded grounding score, or None for actions outcome decides."""
         if action_type == "answer":
             return None
-        if action_type == "image_search" and self.image_scorer is not None:
+        # Image-query actions (image_search, image_to_text) -> CLIP scorer:
+        # both judge "does the query image align with the question's visuals".
+        if action_type in ("image_search", "image_to_text") and self.image_scorer is not None:
             if image_path is None:
                 return 0.5  # no image available (text-only run) -> neutral
             return self.image_scorer.score_image_query(image_path, region, question)
+        # text_search / text_to_image are text-query actions -> text grounding.
         if self.backend == "lexical":
             return self._lexical(question, action_type, action_input)
         return self._api(question, action_type, action_input, state_evidence_texts)
 
     # ------------------------------------------------------------------ #
     def _lexical(self, question: str, action_type: str, action_input: str) -> float:
-        if action_type == "image_search":
+        if action_type in ("image_search", "image_to_text"):
             # Lexical features cannot judge an image query; neutral score.
-            # The CLIP-based verifier (Stage 2, GPU server) replaces this.
+            # The CLIP-based verifier (image_scorer) replaces this when wired.
             return 0.5
         q_tokens = _content_tokens(question)
         a_tokens = _content_tokens(action_input)

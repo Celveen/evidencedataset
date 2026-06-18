@@ -277,3 +277,125 @@ class ClipImageRetriever(DenseRetriever):
         from PIL import Image
 
         return Image.open(path).convert("RGB")
+
+
+class CrossModalCLIPRetriever:
+    """CLIP cross-modal retrieval over two separate sub-indexes.
+
+    Builds an **image sub-index** (docs with ``image_path``, embedded via the
+    CLIP image tower) and a **text sub-index** (docs with text, CLIP text
+    tower). Because both towers share one embedding space, a text query can
+    search images and an image query can search text:
+
+        text_to_image(query)            text query  -> image sub-index
+        image_to_text(image, region)    image query -> text  sub-index
+        search_image(image, region)     image query -> image sub-index (=image_search)
+
+    A doc that has an image is indexed on the image side; a text-only doc on the
+    text side. On a text-only corpus the image sub-index is empty, so
+    text_to_image / search_image return [] (documented limitation — needs
+    images in the corpus). Encoders are injectable for tests (no downloads).
+    """
+
+    def __init__(
+        self,
+        model_name: str = "clip-ViT-B-32",
+        text_encoder: Encoder | None = None,
+        image_encoder: Encoder | None = None,
+        device: str | None = None,
+    ) -> None:
+        self.model_name = model_name
+        self.device = device
+        self._text_encoder = text_encoder
+        self._image_encoder = image_encoder
+        self._model = None
+        self._image_docs: list[Document] = []
+        self._text_docs: list[Document] = []
+        self._image_index = None
+        self._text_index = None
+
+    # ------------------------------------------------------------------ #
+    def build(self, corpus: Sequence[Document]) -> "CrossModalCLIPRetriever":
+        if not corpus:
+            raise ValueError("Cannot build a cross-modal index from an empty corpus.")
+        self._image_docs = [d for d in corpus if d.image_path]
+        self._text_docs = [d for d in corpus if d.text and not d.image_path]
+        if self._image_docs:
+            imgs = [self._open_image(d.image_path) for d in self._image_docs]
+            self._image_index = self._new_index(self._encode_images(imgs))
+        if self._text_docs:
+            txts = [f"{d.title} {d.text}".strip() for d in self._text_docs]
+            self._text_index = self._new_index(self._encode_text(txts))
+        return self
+
+    # ------------------------------------------------------------------ #
+    def text_to_image(self, query: str, top_k: int = 5) -> list[RetrievalHit]:
+        if self._image_index is None:
+            return []  # no images in the corpus
+        return self._search(self._image_index, self._image_docs,
+                            self._encode_text([query]), top_k)
+
+    def image_to_text(self, image_path, region=None, top_k: int = 5) -> list[RetrievalHit]:
+        if self._text_index is None:
+            return []
+        qv = self._encode_images([self._crop(image_path, region)])
+        return self._search(self._text_index, self._text_docs, qv, top_k)
+
+    def search_image(self, image_path, region=None, top_k: int = 5) -> list[RetrievalHit]:
+        """image -> image (the image_search action)."""
+        if self._image_index is None:
+            return []
+        qv = self._encode_images([self._crop(image_path, region)])
+        return self._search(self._image_index, self._image_docs, qv, top_k)
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _search(index, docs, qv, top_k: int) -> list[RetrievalHit]:
+        scores, ids = index.search(qv, min(top_k, len(docs)))
+        return [_hit(docs[i], float(s)) for s, i in zip(scores[0], ids[0]) if i >= 0]
+
+    def _crop(self, image_path: str, region):
+        img = self._open_image(image_path)
+        if region is not None:
+            w, h = img.size
+            x1, y1, x2, y2 = region
+            img = img.crop((int(x1 * w), int(y1 * h), int(x2 * w), int(y2 * h)))
+        return img
+
+    def _encode_text(self, texts):
+        return self._normalize(self._text_encoder, texts)
+
+    def _encode_images(self, images):
+        return self._normalize(self._image_encoder, images)
+
+    def _normalize(self, encoder, items):
+        import numpy as np
+
+        if encoder is not None:
+            vecs = np.asarray(encoder(items), dtype="float32")
+        else:
+            vecs = self._st_model().encode(
+                list(items), convert_to_numpy=True, show_progress_bar=False
+            ).astype("float32")
+        return vecs / np.clip(np.linalg.norm(vecs, axis=1, keepdims=True), 1e-12, None)
+
+    def _st_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            self._model = SentenceTransformer(self.model_name, device=self.device)
+        return self._model
+
+    @staticmethod
+    def _new_index(vecs):
+        import faiss
+
+        index = faiss.IndexFlatIP(vecs.shape[1])
+        index.add(vecs)
+        return index
+
+    @staticmethod
+    def _open_image(path: str):
+        from PIL import Image
+
+        return Image.open(path).convert("RGB")

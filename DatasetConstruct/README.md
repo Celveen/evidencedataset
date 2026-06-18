@@ -33,6 +33,42 @@ python DatasetConstruct/run_pipeline.py --force        # 忽略已有输出重�
 
 ---
 
+## 检索动作空间（2×2 跨模态矩阵）
+
+检索动作按 (query 模态 → 目标模态) 区分，跨模态结果不同：
+
+| 动作 | query→目标 | 检索器 | grounding 打分 |
+|---|---|---|---|
+| `text_search` | 文本→文本 | BM25/Dense | text（lexical/api） |
+| `text_to_image` | 文本→图像 | CLIP 跨模态 | text（query↔question） |
+| `image_to_text` | 图像→文本 | CLIP 跨模态 | CLIP（图↔question 视觉实体） |
+| `image_search` | 图像→图像 | CLIP | CLIP |
+| `answer` | — | — | 不打 local（由 outcome 决定） |
+
+启用跨模态：`config.yaml` 的 `retriever.cross_modal: true`（真实模式生效）。
+**现实约束**：`text_to_image` / `image_search` 需要**语料里有图像**（当前
+Wikipedia 语料是纯文本，image 子索引为空 → 这两个动作返回 []）；`image_to_text`
+需要 **query 图（OVEN）**。补齐图像数据前，这些动作执行但无结果。`focus` 暂不做。
+
+## 看清轨迹：inspector 与 demo
+
+轨迹 JSONL 太长难判断各部分是否正常时，用 inspector 渲染紧凑摘要（动作类型、
+检索命中数+片段、三个分数、rationale+QC）：
+
+```bash
+python DatasetConstruct/inspect_trajectories.py data/trajectories/infoseek_rationales.jsonl --n 5
+python DatasetConstruct/inspect_trajectories.py <file> --action image_to_text   # 只看某动作
+python DatasetConstruct/inspect_trajectories.py <file> --query <query_id> --full # 某 query 全文
+```
+
+零依赖 demo（fake CLIP，无需下载/图像）端到端演示全部 4 个检索动作 + 打分 + rationale：
+
+```bash
+python DatasetConstruct/demo_cross_modal.py
+```
+
+---
+
 ## API key 填在哪
 
 ```bash

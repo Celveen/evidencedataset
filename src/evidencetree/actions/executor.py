@@ -17,8 +17,10 @@ from .action_space import (
     AnswerAction,
     Evidence,
     ImageSearchAction,
+    ImageToTextAction,
     SearchState,
     TextSearchAction,
+    TextToImageAction,
 )
 
 
@@ -29,7 +31,12 @@ class TextRetriever(Protocol):
 
 
 class ImageRetriever(Protocol):
-    """Anything with ``search_image(image_path, region, top_k) -> hits``."""
+    """CLIP retriever for image-involving actions.
+
+    ``search_image`` (image->image) is required; ``text_to_image`` and
+    ``image_to_text`` are needed only if those cross-modal actions are used
+    (see :class:`~evidencetree.actions.retrievers.CrossModalCLIPRetriever`).
+    """
 
     def search_image(self, image_path: str, region=None, top_k: int = 5): ...
 
@@ -52,6 +59,8 @@ class ActionExecutor:
         self._handlers: dict[type[Action], Handler] = {
             TextSearchAction: self._exec_text_search,
             ImageSearchAction: self._exec_image_search,
+            TextToImageAction: self._exec_text_to_image,
+            ImageToTextAction: self._exec_image_to_text,
             AnswerAction: self._exec_answer,
         }
 
@@ -97,6 +106,35 @@ class ActionExecutor:
             image_path, region=action.region, top_k=self.top_k
         )
         return state.advanced(action, self._hits_to_evidence(state, action, hits))
+
+    def _exec_text_to_image(self, state: SearchState, action: Action) -> SearchState:
+        assert isinstance(action, TextToImageAction)
+        retriever = self._require_cross_modal("text_to_image", "text_to_image")
+        hits = retriever.text_to_image(action.query, top_k=self.top_k)
+        return state.advanced(action, self._hits_to_evidence(state, action, hits))
+
+    def _exec_image_to_text(self, state: SearchState, action: Action) -> SearchState:
+        assert isinstance(action, ImageToTextAction)
+        retriever = self._require_cross_modal("image_to_text", "image_to_text")
+        image_path = action.image_path or state.image_path
+        if image_path is None:
+            raise ValueError("image_to_text with no image: neither the action nor "
+                             "the state carries an image_path.")
+        hits = retriever.image_to_text(image_path, region=action.region, top_k=self.top_k)
+        return state.advanced(action, self._hits_to_evidence(state, action, hits))
+
+    def _require_cross_modal(self, action_name: str, method: str):
+        if self.image_retriever is None:
+            raise RuntimeError(
+                f"ActionExecutor has no image_retriever configured ({action_name} "
+                "needs a CrossModalCLIPRetriever, see retrievers.py)."
+            )
+        if not hasattr(self.image_retriever, method):
+            raise TypeError(
+                f"{action_name} needs a retriever with a {method}() method "
+                "(use CrossModalCLIPRetriever)."
+            )
+        return self.image_retriever
 
     def _exec_answer(self, state: SearchState, action: Action) -> SearchState:
         assert isinstance(action, AnswerAction)

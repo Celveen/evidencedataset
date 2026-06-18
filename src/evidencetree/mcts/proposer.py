@@ -23,8 +23,10 @@ from evidencetree.actions.action_space import (
     Action,
     AnswerAction,
     ImageSearchAction,
+    ImageToTextAction,
     SearchState,
     TextSearchAction,
+    TextToImageAction,
 )
 from evidencetree.generation.base import Generator
 
@@ -60,7 +62,8 @@ class HeuristicProposer:
 
     Args:
         generator: generation backend used ONLY to draft answer text.
-        enable_image_search: propose image_search when the state has an image.
+        enable_image_actions: propose image_to_text / image_search / text_to_image
+            when the state carries a query image.
         answer_kwargs_fn: optional ``state -> kwargs`` passed to the generator
             when drafting answers. Mock runs use it to thread the eval-only
             ``reference`` hint; real runs leave it None.
@@ -69,11 +72,11 @@ class HeuristicProposer:
     def __init__(
         self,
         generator: Generator,
-        enable_image_search: bool = True,
+        enable_image_actions: bool = True,
         answer_kwargs_fn: Callable[[SearchState], dict] | None = None,
     ) -> None:
         self.generator = generator
-        self.enable_image_search = enable_image_search
+        self.enable_image_actions = enable_image_actions
         self.answer_kwargs_fn = answer_kwargs_fn
 
     # ------------------------------------------------------------------ #
@@ -90,12 +93,16 @@ class HeuristicProposer:
         if kq and kq != state.question and reformulated not in taken:
             candidates.append(reformulated)
 
-        if (
-            self.enable_image_search
-            and state.image_path is not None
-            and ImageSearchAction() not in taken
-        ):
-            candidates.append(ImageSearchAction())
+        # Cross-modal actions need a query image; only propose when the state
+        # carries one (a text-only run never reaches here).
+        if self.enable_image_actions and state.image_path is not None:
+            for act in (
+                ImageToTextAction(),                       # image -> text
+                ImageSearchAction(),                       # image -> image
+                TextToImageAction(query=kq or state.question),  # text -> image
+            ):
+                if act not in taken:
+                    candidates.append(act)
 
         # Answering blind (no evidence) is allowed only when nothing else is
         # left — the PRM is supposed to punish it, but don't waste budget.
@@ -123,12 +130,15 @@ Evidence collected so far:
 {evidence}
 
 Propose up to {k} candidate next actions as JSON, one per line. Allowed:
-  {{"type": "text_search", "query": "..."}}
-  {{"type": "image_search"}}
+  {{"type": "text_search", "query": "..."}}    # text -> text
+  {{"type": "text_to_image", "query": "..."}}  # text -> image
+  {{"type": "image_to_text"}}                   # the query image -> text
+  {{"type": "image_search"}}                    # the query image -> image
   {{"type": "answer", "text": "..."}}
 
-Rules: prefer searches that fill missing information; only answer when the
-evidence supports it. Output ONLY the JSON lines."""
+Rules: prefer searches that fill missing information; use image_to_text /
+image_search only when an image is given; only answer when the evidence
+supports it. Output ONLY the JSON lines."""
 
 
 class LLMProposer:
@@ -176,13 +186,16 @@ class LLMProposer:
             except json.JSONDecodeError:
                 continue
             t = obj.get("type")
+            region = obj.get("region")
+            region = tuple(region) if region else None
             if t == "text_search" and obj.get("query"):
                 actions.append(TextSearchAction(query=str(obj["query"])))
+            elif t == "text_to_image" and obj.get("query"):
+                actions.append(TextToImageAction(query=str(obj["query"])))
+            elif t == "image_to_text" and state.image_path is not None:
+                actions.append(ImageToTextAction(region=region))
             elif t == "image_search" and state.image_path is not None:
-                region = obj.get("region")
-                actions.append(
-                    ImageSearchAction(region=tuple(region) if region else None)
-                )
+                actions.append(ImageSearchAction(region=region))
             elif t == "answer" and obj.get("text"):
                 actions.append(AnswerAction(text=str(obj["text"])))
         return actions

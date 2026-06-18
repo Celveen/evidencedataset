@@ -73,7 +73,8 @@ class TextSearchAction(Action):
 @register_action
 @dataclass(frozen=True)
 class ImageSearchAction(Action):
-    """Retrieve image-text pairs using an image (or a region of it) as query.
+    """Image -> image retrieval: find visually similar corpus images using an
+    image (or a region of it) as query.
 
     ``image_path=None`` means "use the state's own image". ``region`` is an
     optional normalized bbox (x1, y1, x2, y2) in [0, 1].
@@ -92,6 +93,44 @@ class ImageSearchAction(Action):
     def describe(self) -> str:
         src = self.image_path or "<state image>"
         return f"image_search({src}, region={self.region})"
+
+
+@register_action
+@dataclass(frozen=True)
+class TextToImageAction(Action):
+    """Text -> image retrieval: find corpus images matching a text query
+    (CLIP cross-modal). Distinct from text_search (text->text): a textual cue
+    can surface relevant *images* that a text index would miss."""
+
+    query: str = ""
+
+    action_type: ClassVar[str] = "text_to_image"
+    modality: ClassVar[str] = "text"
+
+    def describe(self) -> str:
+        return f"text_to_image({self.query!r})"
+
+
+@register_action
+@dataclass(frozen=True)
+class ImageToTextAction(Action):
+    """Image -> text retrieval: find corpus text matching an image (or a region
+    of it) as query (CLIP cross-modal). Distinct from image_search (image->
+    image): the query image surfaces relevant *documents* directly."""
+
+    image_path: str | None = None
+    region: tuple[float, float, float, float] | None = None
+
+    action_type: ClassVar[str] = "image_to_text"
+    modality: ClassVar[str] = "image"
+
+    @property
+    def granularity(self) -> str:
+        return "region" if self.region is not None else "whole"
+
+    def describe(self) -> str:
+        src = self.image_path or "<state image>"
+        return f"image_to_text({src}, region={self.region})"
 
 
 @register_action
