@@ -32,8 +32,16 @@ python scripts/run_inference.py --config configs/mcts.yaml --mock --set bandit.e
 
 # 5. 跑测试
 pytest
+
+# 6. 数据集构建（ETBench-Open，4 步 pipeline；mock 无需 API/下载）
+python DatasetConstruct/run_pipeline.py --mock
+python DatasetConstruct/demo_cross_modal.py                 # 演示 4 个跨模态检索动作
+# 轨迹看不清时用 inspector 渲染紧凑摘要：
+python DatasetConstruct/inspect_trajectories.py <轨迹.jsonl> --n 5
 ```
 
+数据集构建（policy VLM + 强 LLM 走 API、跨模态动作、质量控制、如何放量）详见
+[`DatasetConstruct/README.md`](DatasetConstruct/README.md)。
 真实运行（VisualPRM-8B + 1K InfoSeek）需在 GPU 服务器上，详见
 [`pilot/README.md`](pilot/README.md)。
 
@@ -49,7 +57,7 @@ pytest
 
 ```
 src/evidencetree/
-├── actions/      检索动作定义与执行（Stage 1）
+├── actions/      检索动作（text/image_search + text_to_image/image_to_text 跨模态）+ 执行器 + 检索器
 ├── prm/          PRM 模型、verifier、数据生成、训练（Stage 2-4）
 ├── mcts/         树搜索、UCT、bandit（Stage 5-6）
 ├── eval/         benchmark 加载与指标
@@ -69,7 +77,7 @@ tests/            单元测试
 - [ ] Stage 0.2 — MCTS vs Best-of-N gap（搜索框架已就绪，待真实 PRM/数据）
 - [ ] Stage 0.3 — 50 样本人工标注一致性
 - [ ] Stage 0.4 — crop/zoom 需求统计（决定动作空间）
-- [x] Stage 1 — 检索动作空间与执行器（typed actions + executor + BM25/dense/CLIP 检索 + build_index）
+- [x] Stage 1 — 检索动作空间与执行器（2×2 跨模态矩阵：text_search / text_to_image / image_to_text / image_search + answer；executor + BM25/dense/CLIP/跨模态检索 + build_index）
 - [~] Stage 2 — Grounding Verifiers — **接口 + lexical/API-judge 后端已实现**；正式 cross-encoder/CLIP verifier 待 GPU 服务器（Stage 0.3 一致性验证后替换）
 - [~] Stage 3 — 训练数据生成（ETBench-Open）— **构建 pipeline 已实现**（[DatasetConstruct/](DatasetConstruct/README.md)，4 步全流程 + tree-level credit + rationale QC，mock 跑通）；真实数据生成待 API key + 原始数据
 - [ ] Stage 4 — PRM 三阶段训练
