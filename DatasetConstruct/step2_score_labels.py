@@ -19,7 +19,6 @@ from typing import Any
 
 from common import load_env, read_jsonl, resolve, tagged, write_jsonl
 
-from evidencetree.generation import build_generator
 from evidencetree.prm.data_gen import label_steps
 from evidencetree.prm.verifiers import ClipGroundingScorer, GroundingVerifier
 from evidencetree.utils import config as cfgutil
@@ -29,23 +28,19 @@ log = get_logger("dataset.step2")
 
 
 def build_verifier(cfg: dict[str, Any], mock: bool) -> GroundingVerifier:
+    """Unified CLIP grounding (text + image results in one space). Mock/lexical
+    backend uses no model (offline smoke tests)."""
     v_cfg = dict(cfg.get("verifier", {}))
-    backend = "lexical" if mock else v_cfg.get("backend", "lexical")
-    generator = None
-    if backend == "api":
-        generator = build_generator(v_cfg.get("generation", {}))
-
-    # image_search grounding: CLIP scorer (real mode only; mock keeps the
-    # neutral-0.5 fallback so smoke tests need no model download).
-    image_scorer = None
-    if not mock and v_cfg.get("image_backend", "neutral") == "clip":
-        image_scorer = ClipGroundingScorer(
-            model_name=v_cfg.get("clip_model", "clip-ViT-B-32"),
-            device=v_cfg.get("device"),
-            cos_lo=float(v_cfg.get("cos_lo", 0.15)),
-            cos_hi=float(v_cfg.get("cos_hi", 0.32)),
-        )
-    return GroundingVerifier(backend=backend, generator=generator, image_scorer=image_scorer)
+    backend = "lexical" if mock else v_cfg.get("backend", "clip")
+    if backend == "lexical":
+        return GroundingVerifier(clip_scorer=None)
+    scorer = ClipGroundingScorer(
+        model_name=v_cfg.get("clip_model", "clip-ViT-B-32"),
+        device=v_cfg.get("device"),
+        text_band=(float(v_cfg.get("text_cos_lo", 0.5)), float(v_cfg.get("text_cos_hi", 0.9))),
+        image_band=(float(v_cfg.get("image_cos_lo", 0.15)), float(v_cfg.get("image_cos_hi", 0.32))),
+    )
+    return GroundingVerifier(clip_scorer=scorer)
 
 
 def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:

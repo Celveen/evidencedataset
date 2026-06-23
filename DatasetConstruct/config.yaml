@@ -33,24 +33,17 @@ retriever:
   cross_modal: false                 # true=启用 text<->image 跨模态检索（需语料带图像）
   clip_model: clip-ViT-B-32          # 跨模态 CLIP 模型
 
-verifier:                            # Step 2 grounding verifier
-  backend: lexical                   # text_search 后端: lexical（离线免费）| api（LLM judge）
-  image_backend: clip                # image_search 后端: clip（CLIP 图文对齐）| neutral（占位 0.5）
+verifier:                            # Step 2 grounding verifier（打分=检索结果 vs 问题）
+  # 统一 CLIP 空间：文本结果与图像结果都用同一 CLIP 模型、同一 question 锚点打分，
+  # 保证 text/image 动作的 local 分可比（否则尺度差会被 PRM 误当质量差）。
+  backend: clip                      # clip(统一,正式) | lexical(离线 mock，无需下载)
   clip_model: clip-ViT-B-32          # CLIP 模型（服务器可上 OpenCLIP ViT-L）
-  cos_lo: 0.15                       # CLIP cosine→[0,1] 映射下界（经验校准，可调）
-  cos_hi: 0.32                       # 上界；matched 图文对约 0.30
+  # 余弦→[0,1] 映射 band（经验值，服务器上按真实余弦分布校准）：
+  text_cos_lo: 0.5                   # 文本-文本余弦（同模态，偏高）
+  text_cos_hi: 0.9
+  image_cos_lo: 0.15                 # 文本-图像余弦（跨模态，偏低）
+  image_cos_hi: 0.32
   alpha: 0.5                         # score = alpha*local + (1-alpha)*outcome
-  generation:                        # 仅 backend=api 时使用
-    backend: api
-    provider: openai                 # DeepSeek 走 OpenAI 兼容端点
-    model: deepseek-v4-pro
-    base_url: https://api.deepseek.com/v1
-    api_key_env: DEEPSEEK_API_KEY
-    max_new_tokens: 8
-    temperature: 0.0
-    timeout: 120
-    extra_body:                      # v4-pro 是推理模型：必须禁思考，否则
-      thinking: {type: disabled}     # thinking token 吃光预算、content 为空
 
 rationale:                           # Step 3 强 LLM rationale 生成
   backend: api                       # api | mock（mock = 模板，仅冒烟）

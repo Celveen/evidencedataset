@@ -1,4 +1,5 @@
-"""Tests for the CLIP image_search grounding verifier (fake encoders — no DL)."""
+"""Tests for unified CLIP grounding (text + image results in one space) and
+GroundingVerifier dispatch. Fake encoders -> no downloads."""
 
 import numpy as np
 import pytest
@@ -6,7 +7,7 @@ import pytest
 from evidencetree.prm.verifiers import ClipGroundingScorer, GroundingVerifier
 
 
-# Deterministic 2-D fake CLIP: "red" axis vs "blue" axis.
+# Deterministic 2-D fake CLIP: "red" axis vs "blue" axis, shared text+image.
 def _fake_text_encoder(texts):
     return np.array(
         [[1.0, 0.0] if "red" in t.lower() else [0.0, 1.0] for t in texts],
@@ -24,84 +25,89 @@ def _fake_image_encoder(images):
 
 def _scorer():
     return ClipGroundingScorer(
-        image_encoder=_fake_image_encoder, text_encoder=_fake_text_encoder
+        text_encoder=_fake_text_encoder, image_encoder=_fake_image_encoder
     )
 
 
 @pytest.fixture
-def red_image(tmp_path):
+def red_blue(tmp_path):
     from PIL import Image
 
-    p = tmp_path / "red.jpg"
-    Image.new("RGB", (8, 8), (255, 0, 0)).save(p)
-    return str(p)
+    red = tmp_path / "red.jpg"
+    blue = tmp_path / "blue.jpg"
+    Image.new("RGB", (8, 8), (255, 0, 0)).save(red)
+    Image.new("RGB", (8, 8), (0, 0, 255)).save(blue)
+    return str(red), str(blue)
 
 
-def test_alignment_high_when_image_matches_question(red_image):
-    g = _scorer().score_image_query(red_image, None, "What is this red object?")
-    assert g > 0.9  # cos=1 -> above cos_hi -> clamped to 1.0
+# --------------------------------------------------------------------------- #
+# Text results (CLIP text-text)
+# --------------------------------------------------------------------------- #
+def test_text_results_relevant_vs_irrelevant():
+    s = _scorer()
+    assert s.score_text_results("a red thing", ["red rose text"]) > 0.9
+    assert s.score_text_results("a red thing", ["blue sea text"]) < 0.1
+    assert s.score_text_results("a red thing", []) == 0.0
 
 
-def test_alignment_low_when_image_mismatches_question(red_image):
-    g = _scorer().score_image_query(red_image, None, "What is this blue object?")
-    assert g < 0.1  # cos=0 -> below cos_lo -> clamped to 0.0
+# --------------------------------------------------------------------------- #
+# Image results (CLIP text-image)
+# --------------------------------------------------------------------------- #
+def test_image_results_relevant_vs_irrelevant(red_blue):
+    red, blue = red_blue
+    s = _scorer()
+    assert s.score_image_results("a red object", [red]) > 0.9
+    assert s.score_image_results("a red object", [blue]) < 0.1
+    assert s.score_image_results("a red object", [blue, red]) > 0.9  # best wins
+    assert s.score_image_results("a red object", []) == 0.0
 
 
-def test_region_crop_changes_score(tmp_path):
-    """Left half red, right half blue: focusing the right region flips alignment."""
-    from PIL import Image
-
-    img = Image.new("RGB", (8, 8), (0, 0, 255))
-    for x in range(4):
-        for y in range(8):
-            img.putpixel((x, y), (255, 0, 0))
-    p = tmp_path / "half.jpg"
-    img.save(p)
-
-    scorer = _scorer()
-    # whole image: pixel (0,0) is red -> aligns with a red question
-    assert scorer.score_image_query(str(p), None, "red object") > 0.9
-    # right half (region) is blue -> does NOT align with a red question
-    assert scorer.score_image_query(str(p), (0.5, 0.0, 1.0, 1.0), "red object") < 0.1
+def test_image_results_skip_unreadable(red_blue):
+    red, _ = red_blue
+    assert _scorer().score_image_results("a red object", ["/no/such.jpg", red]) > 0.9
 
 
-def test_missing_file_returns_neutral():
-    assert _scorer().score_image_query("/no/such/file.jpg", None, "red") == 0.5
+def test_unified_space_same_anchor(red_blue):
+    """text and image grounding share one CLIP model + the same question anchor,
+    so a relevant text result and a relevant image result both score high."""
+    red, _ = red_blue
+    s = _scorer()
+    t = s.score_text_results("a red thing", ["red rose"])
+    i = s.score_image_results("a red thing", [red])
+    assert t > 0.9 and i > 0.9
 
 
-def test_cos_band_validation():
+def test_band_validation():
     with pytest.raises(ValueError):
-        ClipGroundingScorer(cos_lo=0.4, cos_hi=0.3)
+        ClipGroundingScorer(text_band=(0.9, 0.5))
+    with pytest.raises(ValueError):
+        ClipGroundingScorer(image_band=(0.4, 0.3))
 
 
 # --------------------------------------------------------------------------- #
-# GroundingVerifier dispatch
+# GroundingVerifier dispatch by result modality
 # --------------------------------------------------------------------------- #
-def test_verifier_dispatches_image_search_to_clip(red_image):
-    v = GroundingVerifier(backend="lexical", image_scorer=_scorer())
-    g = v.score(
-        question="this red thing", action_type="image_search",
-        action_input="image_search(<state image>, region=None)", image_path=red_image,
-    )
-    assert g > 0.9
+def test_verifier_dispatches_by_result_modality(red_blue):
+    red, _ = red_blue
+    v = GroundingVerifier(clip_scorer=_scorer())
+    assert v.score(question="red flower", action_type="text_search",
+                   result_texts=["a red rose"]) > 0.9
+    assert v.score(question="red flower", action_type="image_to_text",
+                   result_texts=["a red rose"]) > 0.9
+    assert v.score(question="a red object", action_type="text_to_image",
+                   result_image_paths=[red]) > 0.9
+    assert v.score(question="a red object", action_type="image_search",
+                   result_image_paths=[red]) > 0.9
+    assert v.score(question="q", action_type="answer", result_texts=["x"]) is None
 
 
-def test_verifier_image_search_neutral_without_image():
-    v = GroundingVerifier(backend="lexical", image_scorer=_scorer())
-    g = v.score(question="q", action_type="image_search", action_input="x", image_path=None)
-    assert g == 0.5
-
-
-def test_verifier_image_search_neutral_without_scorer(red_image):
-    """No CLIP scorer wired -> falls back to the documented 0.5 placeholder."""
-    v = GroundingVerifier(backend="lexical")
-    g = v.score(question="q", action_type="image_search", action_input="x", image_path=red_image)
-    assert g == 0.5
-
-
-def test_text_search_unaffected_by_image_scorer():
-    v = GroundingVerifier(backend="lexical", image_scorer=_scorer())
-    g = v.score(question="Where is the Eiffel Tower?", action_type="text_search",
-                action_input="Eiffel Tower")
-    assert g == pytest.approx(1.0)
-    assert v.score(question="q?", action_type="answer", action_input="x") is None
+def test_verifier_lexical_fallback_without_clip():
+    """clip_scorer=None (mock/offline): text -> lexical recall, image -> neutral."""
+    v = GroundingVerifier(clip_scorer=None)
+    q = "How heavy is the bird in grams?"
+    assert v.score(question=q, action_type="text_search",
+                   result_texts=["the bird is heavy, 400 grams"]) > \
+           v.score(question=q, action_type="text_search", result_texts=["Paris France"])
+    assert v.score(question=q, action_type="text_search", result_texts=[]) == 0.0
+    assert v.score(question=q, action_type="image_search", result_image_paths=["/i.jpg"]) == 0.5
+    assert v.score(question=q, action_type="image_search", result_image_paths=[]) == 0.0

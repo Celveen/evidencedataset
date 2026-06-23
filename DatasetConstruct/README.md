@@ -196,7 +196,8 @@ mock 模式的产物自动加 `mock_` 前缀（Step 4 则写进 `mock/` 子目�
 }
 ```
 
-- `local_grounding`：verifier 的 graded 分（0–1 连续）；**answer 步为 null**
+- `local_grounding`：verifier 的 graded 分（0–1 连续）= **该步检索回的结果与
+  question 的相关性**（不是动作输入与 question）；空结果为 0；**answer 步为 null**
   （不参与 local，由 outcome 决定）。
 - `outcome_credit`：**tree-level credit** —— 同 query 内经过相同动作前缀的
   所有轨迹的成功率（`n_traj_through` 条的 Monte Carlo 均值）。**不是**把整条
@@ -253,7 +254,7 @@ data/etbench_open/
 API 调用量级（真实模式）：
 
 - **Step 1** ≈ n_queries × P × (1–2) 次 policy 调用（提议动作 + 起草答案）
-- **Step 2** ≈ 0（lexical verifier 免费；改 `verifier.backend: api` 才走 judge）
+- **Step 2** ≈ 0（统一 CLIP verifier 本地推理，无 API 成本）
 - **Step 3** ≈ 保留样本数 × ~1.2 次强 LLM 调用（含重生成）
 
 报告预算 rationale 约 $800（50–80K 样本）。**强烈建议放量路径**：
@@ -269,22 +270,26 @@ API 调用量级（真实模式）：
 
 ## verifier 现状（诚实声明）
 
-verifier 按动作类型分两路（`config.yaml` 的 `verifier` 块）：
+**grounding 衡量「检索回的结果 vs 问题」的相关性**，不是「动作输入 vs 问题」。
+原因：防臆造已由 policy prompt 解决，且不做 focus → 图像动作的 query 图固定、
+「输入 vs 问题」对它们无区分度；改看结果才能反映「这步检索有没有用」。空结果 → 0。
 
-**text_search**（`backend`）：
-- `lexical`（默认）：query↔question 的内容词对齐度，离线免费、可复现（简化版，
-  报告正式方案是本地 cross-encoder，待补）。
-- `api`：LLM judge 打 graded 分，但有成本。
+**统一 CLIP 空间打分（`backend: clip`，正式版）**：文本结果与图像结果都用
+**同一个 CLIP 模型**、对齐到**同一个 `CLIP_text(question)` 锚点**——
+- 文本结果（text_search / image_to_text）：CLIP 文本塔，`cos(CLIP_text(question), CLIP_text(结果))`
+- 图像结果（text_to_image / image_search）：CLIP 图像塔，`cos(CLIP_text(question), CLIP_image(结果))`，取所有结果 max
 
-**image_search**（`image_backend`）：
-- `clip`（**已实现**，正式版）：CLIP 算"query 图像/region ↔ question 视觉实体"
-  的对齐度（报告 §3.2），graded 0–1。cosine 经 `[cos_lo, cos_hi]` 线性映射到
-  [0,1]（经验校准，可调；CLIP ViT-B/32 matched 图文对约 0.30）。**没有图像时
-  （文本-only 跑）自动退回中性 0.5。**
-- `neutral`：占位 0.5（不加载 CLIP，mock/无图场景用）。
+**为什么必须统一模型**：若文本用 sentence-transformer、图像用 CLIP，两者余弦尺度不同，
+PRM 会把"尺度差"误当成"动作质量差"，从而系统性偏向某类动作 → 污染训练。统一 CLIP +
+同一 question 锚点消除这个偏差。唯一细节：同模态（文本-文本）余弦系统性高于跨模态
+（文本-图像），所以两类各配一个 `cos band` 把余弦校准到同一个"相关性 0–1"语义：
+`text_cos_lo/hi`（默认 0.5/0.9）、`image_cos_lo/hi`（默认 0.15/0.32）。**band 是经验值，
+服务器上务必按真实余弦分布重新校准。**
 
-> **依赖**：`clip` 后端需要 `sentence-transformers` + `pillow`（已在
-> `requirements/models.txt`）。服务器可把 `clip_model` 换成 OpenCLIP ViT-L，
-> 或注入与 `ClipImageRetriever` 共享的 CLIP 实例避免重复加载。
-> **仍待办**：`crop`/`zoom`/`focus` 的 detection/OCR verifier（动作本身待
-> Stage 0.4 决定）；Stage 0.3（50 样本人工一致性）通过后再全量放量 Step 2。
+`backend: lexical`（mock/离线）：文本结果用 question 内容词召回率、图像结果中性 0.5，
+不加载任何模型（冒烟测试用）。
+
+> **依赖**：`clip` 需要 `sentence-transformers` + `pillow`（已在 `requirements/models.txt`）。
+> 服务器可把 `clip_model` 换成 OpenCLIP ViT-L，或注入与 `ClipImageRetriever` 共享的
+> CLIP 实例避免重复加载。
+> **仍待办**：band 真实分布校准；Stage 0.3（50 样本人工一致性）通过后再全量放量 Step 2。

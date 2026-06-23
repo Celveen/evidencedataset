@@ -8,28 +8,36 @@ from evidencetree.prm.verifiers import GroundingVerifier
 
 
 # --------------------------------------------------------------------------- #
-# Verifier (lexical backend)
+# Verifier — grounding = retrieved RESULT vs question (lexical fallback here)
 # --------------------------------------------------------------------------- #
-def test_lexical_verifier_grades_query_alignment():
-    v = GroundingVerifier(backend="lexical")
-    q = "In which city is the Eiffel Tower located?"
-    aligned = v.score(question=q, action_type="text_search", action_input="Eiffel Tower city")
-    drifting = v.score(question=q, action_type="text_search", action_input="Taylor Swift songs")
-    assert aligned == pytest.approx(1.0)
-    assert drifting == pytest.approx(0.0)
-    partial = v.score(question=q, action_type="text_search", action_input="Eiffel Tower Japan")
-    assert 0.0 < partial < 1.0  # graded, not binary
+def test_text_result_relevance_graded():
+    v = GroundingVerifier(clip_scorer=None)  # lexical fallback
+    q = "How heavy is this bird in grams?"
+    relevant = v.score(question=q, action_type="text_search",
+                       result_texts=["The bird weighs about 400 grams when heavy."])
+    irrelevant = v.score(question=q, action_type="text_search",
+                         result_texts=["Paris is the capital of France."])
+    assert relevant > irrelevant
+    assert relevant == pytest.approx(1.0)      # all content words covered
+    assert irrelevant == pytest.approx(0.0)
 
 
-def test_verifier_answer_returns_none_and_image_neutral():
-    v = GroundingVerifier(backend="lexical")
-    assert v.score(question="q?", action_type="answer", action_input="Paris") is None
-    assert v.score(question="q?", action_type="image_search", action_input="") == 0.5
+def test_empty_results_score_zero():
+    v = GroundingVerifier(clip_scorer=None)
+    assert v.score(question="q?", action_type="text_search", result_texts=[]) == 0.0
+    # image-result action with no images and no CLIP scorer -> 0.0
+    assert v.score(question="q?", action_type="text_to_image", result_image_paths=[]) == 0.0
 
 
-def test_api_verifier_requires_generator():
-    with pytest.raises(ValueError):
-        GroundingVerifier(backend="api")
+def test_verifier_answer_returns_none():
+    v = GroundingVerifier(clip_scorer=None)
+    assert v.score(question="q?", action_type="answer", result_texts=["x"]) is None
+
+
+def test_image_result_action_without_scorer_is_neutral_when_results_exist():
+    v = GroundingVerifier(clip_scorer=None)
+    g = v.score(question="q?", action_type="image_search", result_image_paths=["/some/img.jpg"])
+    assert g == 0.5  # can't judge images without CLIP, but something was retrieved
 
 
 # --------------------------------------------------------------------------- #

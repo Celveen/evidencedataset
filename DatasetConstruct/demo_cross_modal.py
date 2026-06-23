@@ -72,7 +72,8 @@ def main() -> int:
         a_in = getattr(a, "query", None) or getattr(a, "text", "") or a.describe()
         step = {"step_index": i, "action_type": a.action_type, "action_input": str(a_in),
                 "evidence": [{"evidence_id": e.evidence_id, "doc_id": e.doc_id,
-                              "title": e.title, "text": e.text, "score": e.score}
+                              "title": e.title, "text": e.text,
+                              "image_path": e.image_path, "score": e.score}
                              for e in s.evidence if e.step_index == i]}
         if a.action_type in ("image_search", "image_to_text"):
             step["region"] = list(a.region) if a.region else None
@@ -85,10 +86,12 @@ def main() -> int:
     print("\n########## TRAJECTORY (inspector view) ##########\n")
     print(inspect.render_trajectory(traj, width=90))
 
-    # Score (image actions -> CLIP scorer) + mock rationales, then show samples.
+    # Score (RESULT vs question) in ONE unified CLIP space (fake encoders here).
     verifier = GroundingVerifier(
-        backend="lexical",
-        image_scorer=ClipGroundingScorer(image_encoder=_img_enc, text_encoder=_txt_enc),
+        clip_scorer=ClipGroundingScorer(
+            text_encoder=_txt_enc, image_encoder=_img_enc,
+            text_band=(0.0, 1.0), image_band=(0.0, 1.0),  # fake cos in {0,1}
+        )
     )
     samples = label_steps([traj], verifier=verifier, alpha=0.5)
     rgen = RationaleGenerator(backend="mock")

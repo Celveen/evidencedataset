@@ -69,14 +69,13 @@ def label_steps(
         prefix: tuple[tuple[str, str], ...] = ()
         for step in traj["steps"]:
             prefix = prefix + ((step["action_type"], step["action_input"]),)
-            region = step.get("region")
+            # Grounding scores the RETRIEVED RESULT of this step vs the question.
+            obs = step.get("evidence", [])
             local = verifier.score(
                 question=traj["question"],
                 action_type=step["action_type"],
-                action_input=step["action_input"],
-                state_evidence_texts=[e["text"] for e in evidence_before],
-                image_path=step.get("image_path") or traj.get("image_path"),
-                region=tuple(region) if region else None,
+                result_texts=[e["text"] for e in obs if e.get("text")],
+                result_image_paths=[e["image_path"] for e in obs if e.get("image_path")],
             )
             outcome, n_through = credit[(traj["query_id"], prefix)]
             samples.append(

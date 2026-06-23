@@ -95,6 +95,7 @@ def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
                     "doc_id": e.doc_id,
                     "title": e.title,
                     "text": e.text,
+                    "image_path": e.image_path,   # needed for image-result grounding
                     "score": e.score,
                 }
                 for e in state.evidence
