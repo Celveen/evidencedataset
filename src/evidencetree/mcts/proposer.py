@@ -123,7 +123,8 @@ class HeuristicProposer:
 # --------------------------------------------------------------------------- #
 # LLM proposer (policy model; GPU server / API)
 # --------------------------------------------------------------------------- #
-_PROPOSE_PROMPT = """You are planning retrieval actions to answer a question.
+_PROPOSE_PROMPT = """You are planning retrieval actions to answer a question \
+about the given image.
 
 Question: {question}
 Evidence collected so far:
@@ -136,9 +137,18 @@ Propose up to {k} candidate next actions as JSON, one per line. Allowed:
   {{"type": "image_search"}}                    # the query image -> image
   {{"type": "answer", "text": "..."}}
 
-Rules: prefer searches that fill missing information; use image_to_text /
-image_search only when an image is given; only answer when the evidence
-supports it. Output ONLY the JSON lines."""
+Rules:
+- The question refers to the given image (e.g. "this bird", "this building").
+  Do NOT invent or assume a specific entity identity (a concrete species,
+  landmark, person, ...) that the image and evidence have not established.
+  Guessing an identity and searching for it propagates errors through the
+  whole trajectory.
+- If the entity is not yet identified, FIRST use image_to_text / image_search
+  to identify it from the image, THEN text_search its specific attribute.
+- Keep every search query faithful to the original question's intent; do not
+  drift away from what is actually being asked.
+- Only answer when the collected evidence actually supports the answer.
+Output ONLY the JSON lines."""
 
 
 class LLMProposer:

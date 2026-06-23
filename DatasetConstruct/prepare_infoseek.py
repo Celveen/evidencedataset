@@ -47,16 +47,24 @@ def convert(raw_dir: Path, out_path: Path, images_dir: Path | None) -> int:
     else:
         log.warning("KB mapping %s missing — entity metadata will be empty.", kb_path)
 
+    # Pre-scan the image dir once: map image_id (file stem) -> path. Handles any
+    # extension and nested subdirectories, so it works whatever layout the OVEN
+    # download used on the server (oven_xxx.jpg / .jpeg / .png, sharded dirs...).
+    image_index: dict[str, str] = {}
+    if images_dir is not None:
+        exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        for p in images_dir.rglob("*"):
+            if p.suffix.lower() in exts:
+                image_index.setdefault(p.stem, str(p))
+        log.info("Indexed %d image files under %s", len(image_index), images_dir)
+
     rows = []
     n_with_image = 0
     for obj in read_jsonl(val_path):
         image_id = obj.get("image_id", "")
-        image_path = None
-        if images_dir is not None and image_id:
-            candidate = images_dir / f"{image_id}.jpg"
-            if candidate.exists():
-                image_path = str(candidate)
-                n_with_image += 1
+        image_path = image_index.get(image_id)
+        if image_path:
+            n_with_image += 1
         kb = entity_by_id.get(obj["data_id"], {})
         gold = obj.get("answer_eval") or obj.get("answer") or []
         rows.append(
