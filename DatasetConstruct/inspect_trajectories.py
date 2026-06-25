@@ -2,8 +2,8 @@
 
 The raw JSONL is hard to eyeball (long evidence text, nested fields). This
 renders a compact, truncated summary so you can verify each part at a glance:
-which action types fired (text_search / text_to_image / image_to_text /
-image_search / answer), how many hits each returned (with a snippet), the three
+which action types fired (text_search / image_search / answer), how many hits
+each returned (with a snippet), the three
 score labels, and the rationale + its QC status.
 
 Auto-detects the file kind:
@@ -14,7 +14,7 @@ Usage:
     python DatasetConstruct/inspect_trajectories.py data/trajectories/mock_infoseek_rationales.jsonl
     python DatasetConstruct/inspect_trajectories.py <file> --n 5 --full
     python DatasetConstruct/inspect_trajectories.py <file> --query infoseek_val_00000000
-    python DatasetConstruct/inspect_trajectories.py <file> --action image_to_text
+    python DatasetConstruct/inspect_trajectories.py <file> --action image_search
 """
 
 from __future__ import annotations

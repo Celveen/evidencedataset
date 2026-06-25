@@ -1,4 +1,10 @@
-"""Retrieval action space: definitions, retrievers, and executor (Stage 1)."""
+"""Retrieval action space: definitions, retrievers, and executor (Stage 1).
+
+Two retrieval actions split by QUERY modality (+ answer):
+    text_search(query)            — query the corpus with text  (BM25/dense)
+    image_search(image, region?)  — query the corpus with the image (CLIP)
+    answer(text)                  — terminal
+"""
 
 from .action_space import (
     ACTION_REGISTRY,
@@ -6,17 +12,14 @@ from .action_space import (
     AnswerAction,
     Evidence,
     ImageSearchAction,
-    ImageToTextAction,
     SearchState,
     TextSearchAction,
-    TextToImageAction,
     register_action,
 )
 from .executor import ActionExecutor
 from .retrievers import (
     BM25Retriever,
     ClipImageRetriever,
-    CrossModalCLIPRetriever,
     DenseRetriever,
     RetrievalHit,
 )
@@ -28,14 +31,11 @@ __all__ = [
     "AnswerAction",
     "BM25Retriever",
     "ClipImageRetriever",
-    "CrossModalCLIPRetriever",
     "DenseRetriever",
     "Evidence",
     "ImageSearchAction",
-    "ImageToTextAction",
     "RetrievalHit",
     "SearchState",
     "TextSearchAction",
-    "TextToImageAction",
     "register_action",
 ]

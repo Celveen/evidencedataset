@@ -30,8 +30,8 @@ policy:                              # Step 1 policy VLM（API 形式）
 
 retriever:
   top_k: 5
-  cross_modal: false                 # true=启用 text<->image 跨模态检索（需语料带图像）
-  clip_model: clip-ViT-B-32          # 跨模态 CLIP 模型
+  image_search: false                # true=启用 image_search（图 query 检索混合语料，需语料/query 带图）
+  clip_model: clip-ViT-B-32          # image_search 用的 CLIP 模型
 
 verifier:                            # Step 2 grounding verifier（打分=检索结果 vs 问题）
   # 统一 CLIP 空间：文本结果与图像结果都用同一 CLIP 模型、同一 question 锚点打分，

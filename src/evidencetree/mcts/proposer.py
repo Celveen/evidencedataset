@@ -23,10 +23,8 @@ from evidencetree.actions.action_space import (
     Action,
     AnswerAction,
     ImageSearchAction,
-    ImageToTextAction,
     SearchState,
     TextSearchAction,
-    TextToImageAction,
 )
 from evidencetree.generation.base import Generator
 
@@ -62,8 +60,8 @@ class HeuristicProposer:
 
     Args:
         generator: generation backend used ONLY to draft answer text.
-        enable_image_actions: propose image_to_text / image_search / text_to_image
-            when the state carries a query image.
+        enable_image_actions: propose image_search when the state carries a
+            query image.
         answer_kwargs_fn: optional ``state -> kwargs`` passed to the generator
             when drafting answers. Mock runs use it to thread the eval-only
             ``reference`` hint; real runs leave it None.
@@ -93,16 +91,14 @@ class HeuristicProposer:
         if kq and kq != state.question and reformulated not in taken:
             candidates.append(reformulated)
 
-        # Cross-modal actions need a query image; only propose when the state
+        # image_search queries the corpus with the image; only when the state
         # carries one (a text-only run never reaches here).
-        if self.enable_image_actions and state.image_path is not None:
-            for act in (
-                ImageToTextAction(),                       # image -> text
-                ImageSearchAction(),                       # image -> image
-                TextToImageAction(query=kq or state.question),  # text -> image
-            ):
-                if act not in taken:
-                    candidates.append(act)
+        if (
+            self.enable_image_actions
+            and state.image_path is not None
+            and ImageSearchAction() not in taken
+        ):
+            candidates.append(ImageSearchAction())
 
         # Answering blind (no evidence) is allowed only when nothing else is
         # left — the PRM is supposed to punish it, but don't waste budget.
@@ -131,10 +127,8 @@ Evidence collected so far:
 {evidence}
 
 Propose up to {k} candidate next actions as JSON, one per line. Allowed:
-  {{"type": "text_search", "query": "..."}}    # text -> text
-  {{"type": "text_to_image", "query": "..."}}  # text -> image
-  {{"type": "image_to_text"}}                   # the query image -> text
-  {{"type": "image_search"}}                    # the query image -> image
+  {{"type": "text_search", "query": "..."}}    # query the corpus with text
+  {{"type": "image_search"}}                    # query the corpus with the image
   {{"type": "answer", "text": "..."}}
 
 Rules:
@@ -143,8 +137,8 @@ Rules:
   landmark, person, ...) that the image and evidence have not established.
   Guessing an identity and searching for it propagates errors through the
   whole trajectory.
-- If the entity is not yet identified, FIRST use image_to_text / image_search
-  to identify it from the image, THEN text_search its specific attribute.
+- If the entity is not yet identified, FIRST use image_search to find corpus
+  entries matching the image, THEN text_search its specific attribute.
 - Keep every search query faithful to the original question's intent; do not
   drift away from what is actually being asked.
 - Only answer when the collected evidence actually supports the answer.
@@ -200,10 +194,6 @@ class LLMProposer:
             region = tuple(region) if region else None
             if t == "text_search" and obj.get("query"):
                 actions.append(TextSearchAction(query=str(obj["query"])))
-            elif t == "text_to_image" and obj.get("query"):
-                actions.append(TextToImageAction(query=str(obj["query"])))
-            elif t == "image_to_text" and state.image_path is not None:
-                actions.append(ImageToTextAction(region=region))
             elif t == "image_search" and state.image_path is not None:
                 actions.append(ImageSearchAction(region=region))
             elif t == "answer" and obj.get("text"):

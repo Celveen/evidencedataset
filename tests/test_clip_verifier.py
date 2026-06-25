@@ -87,17 +87,17 @@ def test_band_validation():
 # --------------------------------------------------------------------------- #
 # GroundingVerifier dispatch by result modality
 # --------------------------------------------------------------------------- #
-def test_verifier_dispatches_by_result_modality(red_blue):
+def test_verifier_scores_by_result_modality(red_blue):
     red, _ = red_blue
     v = GroundingVerifier(clip_scorer=_scorer())
+    # text result -> text-text CLIP; image result -> text-image CLIP
     assert v.score(question="red flower", action_type="text_search",
                    result_texts=["a red rose"]) > 0.9
-    assert v.score(question="red flower", action_type="image_to_text",
-                   result_texts=["a red rose"]) > 0.9
-    assert v.score(question="a red object", action_type="text_to_image",
-                   result_image_paths=[red]) > 0.9
     assert v.score(question="a red object", action_type="image_search",
                    result_image_paths=[red]) > 0.9
+    # mixed results (image_search over a shared corpus) -> best modality wins
+    assert v.score(question="a red object", action_type="image_search",
+                   result_texts=["blue sea text"], result_image_paths=[red]) > 0.9
     assert v.score(question="q", action_type="answer", result_texts=["x"]) is None
 
 

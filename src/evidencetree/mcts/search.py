@@ -134,11 +134,20 @@ class MCTSSearcher:
         proposer: ActionProposer,
         scorer: TrajectoryScorer,
         config: SearchConfig | None = None,
+        tracer=None,
     ) -> None:
         self.executor = executor
         self.proposer = proposer
         self.scorer = scorer
         self.cfg = config or SearchConfig()
+        # Optional callable(dict) -> None for step-by-step inspection of the
+        # search (selection UCT scores, expansion priors, simulation, backup).
+        # Default None = zero overhead, so normal runs/tests are unaffected.
+        self.tracer = tracer
+
+    def _emit(self, **event) -> None:
+        if self.tracer is not None:
+            self.tracer(event)
 
     # ------------------------------------------------------------------ #
     def search(self, question: str, image_path: str | None = None) -> SearchResult:
@@ -163,6 +172,7 @@ class MCTSSearcher:
 
         for t in range(cfg.rollouts):
             lam = bandit.select() if bandit else cfg.lam
+            self._emit(event="rollout_start", t=t, lam=lam)
             terminal_state, reward = self._rollout(root, lam)
             if bandit:
                 bandit.update(reward)
@@ -211,19 +221,27 @@ class MCTSSearcher:
 
     def _best_child(self, node: MCTSNode, lam: float) -> MCTSNode:
         path = node.path_actions()
-        return max(
-            node.children,
-            key=lambda ch: uct_score(
-                q_value=ch.q_value,
-                visits=ch.visits,
-                parent_visits=node.visits,
-                novelty=modality_novelty(
-                    ch.action, path, w_mod=self.cfg.w_mod, w_gran=self.cfg.w_gran
-                ),
-                c=self.cfg.c_uct,
-                lam=lam,
-            ),
+        scored = []
+        for ch in node.children:
+            nov = modality_novelty(
+                ch.action, path, w_mod=self.cfg.w_mod, w_gran=self.cfg.w_gran
+            )
+            u = uct_score(
+                q_value=ch.q_value, visits=ch.visits, parent_visits=node.visits,
+                novelty=nov, c=self.cfg.c_uct, lam=lam,
+            )
+            scored.append((u, nov, ch))
+        best = max(scored, key=lambda x: x[0])[2]
+        self._emit(
+            event="select",
+            candidates=[
+                {"action": ch.action.describe(), "uct": u, "q": ch.q_value,
+                 "visits": ch.visits, "novelty": nov, "prior": ch.prior}
+                for u, nov, ch in scored
+            ],
+            chosen=best.action.describe(),
         )
+        return best
 
     def _expand(self, node: MCTSNode) -> None:
         """Propose candidates, execute them, PRM-rank, keep top-k children."""
@@ -239,25 +257,46 @@ class MCTSSearcher:
             prior = float(self.scorer.score(state_to_trajectory(child_state)))
             scored.append(MCTSNode(child_state, parent=node, action=action, prior=prior))
         scored.sort(key=lambda ch: ch.prior, reverse=True)
-        for child in scored[: self.cfg.top_k_children]:
+        kept = scored[: self.cfg.top_k_children]
+        for child in kept:
             node.add_child(child)
+        self._emit(
+            event="expand",
+            proposed=[
+                {"action": ch.action.describe(), "prior": ch.prior,
+                 "n_evidence": len(ch.state.evidence)}
+                for ch in scored
+            ],
+            kept=[ch.action.describe() for ch in kept],
+        )
 
     def _simulate(self, state: SearchState) -> tuple[SearchState, float]:
         """Greedy continuation to a terminal state, then PRM-score the
         trajectory. Forces an answer at max_depth so every rollout is scorable."""
+        rolled = []
         while not state.is_terminal and state.depth < self.cfg.max_depth:
             candidates = self.proposer.propose(state, k=1)
             if not candidates:
                 break
             state = self.executor.execute(state, candidates[0])
+            rolled.append(candidates[0].describe())
         if not state.is_terminal:
-            state = self.executor.execute(state, self.proposer.propose_answer(state))
+            answer = self.proposer.propose_answer(state)
+            state = self.executor.execute(state, answer)
+            rolled.append(answer.describe())
         reward = float(self.scorer.score(state_to_trajectory(state)))
+        self._emit(event="simulate", rollout_actions=rolled,
+                   answer=state.final_answer, reward=reward)
         return state, reward
 
-    @staticmethod
-    def _backup(node: MCTSNode, reward: float) -> None:
+    def _backup(self, node: MCTSNode, reward: float) -> None:
+        path = []
         current: MCTSNode | None = node
         while current is not None:
             current.update(reward)
+            path.append(
+                (current.action.describe() if current.action else "<root>",
+                 current.visits, current.q_value)
+            )
             current = current.parent
+        self._emit(event="backup", reward=reward, path=path)

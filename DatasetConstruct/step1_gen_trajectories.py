@@ -17,7 +17,7 @@ from typing import Any
 
 from common import append_jsonl, load_env, read_jsonl, resolve, tagged
 
-from evidencetree.actions import ActionExecutor, BM25Retriever, CrossModalCLIPRetriever
+from evidencetree.actions import ActionExecutor, BM25Retriever, ClipImageRetriever
 from evidencetree.eval import benchmarks, metrics
 from evidencetree.generation import build_generator
 from evidencetree.mcts import HeuristicProposer, LLMProposer, MCTSSearcher, SearchConfig
@@ -32,16 +32,16 @@ def build_searcher(cfg: dict[str, Any], queries, corpus, mock: bool) -> MCTSSear
     retriever = BM25Retriever().build(corpus)
     r_cfg = dict(cfg.get("retriever", {}))
 
-    # Cross-modal CLIP retriever (text<->image). Real mode + opt-in only; on a
-    # text-only corpus the image sub-index is empty, so image-target actions
-    # return [] until the corpus carries images (see DatasetConstruct/README.md).
+    # image_search queries the corpus with the image (CLIP over one shared index:
+    # image-side docs embed via the image tower, text-side via the text tower).
+    # Real mode + opt-in; needs a query image on the state to fire.
     image_retriever = None
-    if not mock and r_cfg.get("cross_modal", False):
-        image_retriever = CrossModalCLIPRetriever(
+    if not mock and r_cfg.get("image_search", False):
+        image_retriever = ClipImageRetriever(
             model_name=r_cfg.get("clip_model", "clip-ViT-B-32"),
             device=r_cfg.get("device"),
         ).build(corpus)
-        log.info("Cross-modal CLIP retriever built (text<->image enabled).")
+        log.info("CLIP image_search retriever built over the shared corpus.")
 
     executor = ActionExecutor(
         text_retriever=retriever,
@@ -102,7 +102,7 @@ def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
                 if e.step_index == i
             ],
         }
-        if action.action_type in ("image_search", "image_to_text"):
+        if action.action_type == "image_search":
             region = getattr(action, "region", None)
             step["region"] = list(region) if region is not None else None
             step["image_path"] = getattr(action, "image_path", None) or state.image_path

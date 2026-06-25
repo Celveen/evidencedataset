@@ -2,8 +2,8 @@
 
 Grounding measures **how relevant the action's RETRIEVED RESULT is to the
 question** (not whether the action's input aligns with the question — that
-cannot rate image_search / image_to_text whose query image is fixed, and
-anti-fabrication is already handled by the policy prompt). Empty results -> 0.
+cannot rate image_search whose query image is fixed, and anti-fabrication is
+already handled by the policy prompt). Empty results -> 0.
 
 UNIFIED CLIP SCORING (so scores are comparable across action types):
 all grounding is a cosine in ONE CLIP embedding space against the SAME anchor
@@ -19,10 +19,10 @@ band — same model, same anchor, the band just calibrates both cosine
 distributions onto the same "relevance" meaning. Bands are empirical; recalibrate
 from the real cosine distribution on the server.
 
-Dispatch by the action's RESULT modality:
-    text_search, image_to_text   -> text results  -> CLIP text-text
-    text_to_image, image_search  -> image results -> CLIP text-image
-    answer                       -> None (outcome decides)
+Scored by the ACTUAL modality of each retrieved result, not the action type:
+a step's results (text_search and image_search both query one shared corpus,
+so either can return text- or image-side docs) are scored per modality and the
+best relevance is taken. ``answer`` -> None (outcome decides).
 
 A ``clip_scorer=None`` verifier (mock / offline tests) falls back to lexical
 question-word recall for text results and a neutral 0.5 for image results, so
@@ -150,17 +150,16 @@ class ClipGroundingScorer:
         return Image.open(path).convert("RGB")
 
 
-# --------------------------------------------------------------------------- #
-# Verifier: dispatch by result modality
-# --------------------------------------------------------------------------- #
-_IMAGE_RESULT_ACTIONS = {"text_to_image", "image_search"}   # results are images
-_TEXT_RESULT_ACTIONS = {"text_search", "image_to_text"}     # results are text
-
-
 class GroundingVerifier:
     """g(action, results) -> graded relevance of the retrieved result to the
     question, scored in one unified CLIP space (or lexical/neutral fallback when
-    no clip_scorer is wired)."""
+    no clip_scorer is wired).
+
+    Both text_search and image_search query one shared corpus, so a step's
+    results may mix text- and image-side docs. Each modality present is scored
+    against the question and the best (max) relevance is taken — the step is as
+    well-grounded as its most on-topic retrieved result.
+    """
 
     def __init__(self, clip_scorer: ClipGroundingScorer | None = None):
         self.clip_scorer = clip_scorer
@@ -176,11 +175,19 @@ class GroundingVerifier:
         """Graded grounding score, or None for actions outcome decides."""
         if action_type == "answer":
             return None
-        if action_type in _IMAGE_RESULT_ACTIONS:
-            if self.clip_scorer is None:
-                return 0.5 if [p for p in result_image_paths if p] else 0.0
-            return self.clip_scorer.score_image_results(question, result_image_paths)
-        # text-result actions (and any unknown type) -> text relevance
+        texts = [t for t in result_texts if t]
+        images = [p for p in result_image_paths if p]
+        if not texts and not images:
+            return 0.0
+        parts: list[float] = []
         if self.clip_scorer is None:
-            return _lexical_recall(question, result_texts)
-        return self.clip_scorer.score_text_results(question, result_texts)
+            if texts:
+                parts.append(_lexical_recall(question, texts))
+            if images:
+                parts.append(0.5)  # offline: cannot judge an image
+        else:
+            if texts:
+                parts.append(self.clip_scorer.score_text_results(question, texts))
+            if images:
+                parts.append(self.clip_scorer.score_image_results(question, images))
+        return max(parts) if parts else 0.0

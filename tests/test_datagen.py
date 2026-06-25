@@ -25,8 +25,8 @@ def test_text_result_relevance_graded():
 def test_empty_results_score_zero():
     v = GroundingVerifier(clip_scorer=None)
     assert v.score(question="q?", action_type="text_search", result_texts=[]) == 0.0
-    # image-result action with no images and no CLIP scorer -> 0.0
-    assert v.score(question="q?", action_type="text_to_image", result_image_paths=[]) == 0.0
+    # image_search with no images and no CLIP scorer -> 0.0
+    assert v.score(question="q?", action_type="image_search", result_image_paths=[]) == 0.0
 
 
 def test_verifier_answer_returns_none():
