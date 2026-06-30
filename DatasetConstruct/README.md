@@ -33,38 +33,42 @@ python DatasetConstruct/run_pipeline.py --force        # 忽略已有输出重�
 
 ---
 
-## 检索动作空间（2×2 跨模态矩阵）
+## 检索动作空间（按 query 模态切分）
 
-检索动作按 (query 模态 → 目标模态) 区分，跨模态结果不同：
+检索动作只按 **query（检索输入）的模态**区分，两个搜索动作查询的是**同一个统一
+CLIP 语料索引**，结果既可能是文本侧、也可能是图像侧文档：
 
-| 动作 | query→目标 | 检索器 | grounding 打分 |
+| 动作 | query 模态 | 检索器 | grounding 打分 |
 |---|---|---|---|
-| `text_search` | 文本→文本 | BM25/Dense | text（lexical/api） |
-| `text_to_image` | 文本→图像 | CLIP 跨模态 | text（query↔question） |
-| `image_to_text` | 图像→文本 | CLIP 跨模态 | CLIP（图↔question 视觉实体） |
-| `image_search` | 图像→图像 | CLIP | CLIP |
+| `text_search` | 文本 | BM25/Dense（或统一 CLIP 文本塔） | 按返回结果模态打分（见下） |
+| `image_search` | 图像 | 统一 CLIP（图 query 检索混合语料） | 按返回结果模态打分（见下） |
 | `answer` | — | — | 不打 local（由 outcome 决定） |
 
-启用跨模态：`config.yaml` 的 `retriever.cross_modal: true`（真实模式生效）。
-**现实约束**：`text_to_image` / `image_search` 需要**语料里有图像**（当前
-Wikipedia 语料是纯文本，image 子索引为空 → 这两个动作返回 []）；`image_to_text`
-需要 **query 图（OVEN）**。补齐图像数据前，这些动作执行但无结果。`focus` 暂不做。
+启用图检索：`config.yaml` 的 `retriever.image_search: true`（真实模式生效）。
+**现实约束**：`image_search` 需要**语料里有图像**（当前 Wikipedia 语料是纯文本，
+image 子索引为空 → 该动作执行但返回 []），且需要 **query 图（OVEN）**。补齐图像数据
+前，图检索执行但无结果。`crop` / `zoom` / `focus` 暂不做（待 Stage 0.4 统计决定）。
 
-## 看清轨迹：inspector 与 demo
+> 早期版本曾把检索动作按 (query 模态 × 结果模态) 拆成 2×2 四个
+> （`text_search` / `text_to_image` / `image_to_text` / `image_search`），后收口为按
+> query 模态切分的两个搜索动作 —— 结果模态由检索器在统一语料里按相关度自然决定，不再
+> 硬编码进动作类型。详见根目录 `EvidenceTree_项目实现报告_v1.3.md` §3.1。
+
+## 看清轨迹：inspector 与 trace
 
 轨迹 JSONL 太长难判断各部分是否正常时，用 inspector 渲染紧凑摘要（动作类型、
 检索命中数+片段、三个分数、rationale+QC）：
 
 ```bash
 python DatasetConstruct/inspect_trajectories.py data/trajectories/infoseek_rationales.jsonl --n 5
-python DatasetConstruct/inspect_trajectories.py <file> --action image_to_text   # 只看某动作
+python DatasetConstruct/inspect_trajectories.py <file> --action image_search    # 只看某动作
 python DatasetConstruct/inspect_trajectories.py <file> --query <query_id> --full # 某 query 全文
 ```
 
-零依赖 demo（fake CLIP，无需下载/图像）端到端演示全部 4 个检索动作 + 打分 + rationale：
+确定性追踪一条完整 MCTS 轨迹（selection→expansion→simulation→backup，图文场景，无需下载）：
 
 ```bash
-python DatasetConstruct/demo_cross_modal.py
+python DatasetConstruct/trace_trajectory.py
 ```
 
 ---
@@ -276,8 +280,10 @@ API 调用量级（真实模式）：
 
 **统一 CLIP 空间打分（`backend: clip`，正式版）**：文本结果与图像结果都用
 **同一个 CLIP 模型**、对齐到**同一个 `CLIP_text(question)` 锚点**——
-- 文本结果（text_search / image_to_text）：CLIP 文本塔，`cos(CLIP_text(question), CLIP_text(结果))`
-- 图像结果（text_to_image / image_search）：CLIP 图像塔，`cos(CLIP_text(question), CLIP_image(结果))`，取所有结果 max
+- 文本侧结果：CLIP 文本塔，`cos(CLIP_text(question), CLIP_text(结果))`
+- 图像侧结果：CLIP 图像塔，`cos(CLIP_text(question), CLIP_image(结果))`，取所有结果 max
+
+（`text_search` 与 `image_search` 查同一语料，一步的结果可能混有两种模态，各自打分后取 max。）
 
 **为什么必须统一模型**：若文本用 sentence-transformer、图像用 CLIP，两者余弦尺度不同，
 PRM 会把"尺度差"误当成"动作质量差"，从而系统性偏向某类动作 → 污染训练。统一 CLIP +

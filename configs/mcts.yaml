@@ -1,4 +1,4 @@
-# MCTS inference config (Stage 5 fixed lambda; Stage 6 flips bandit.enabled).
+# MCTS inference config (PRM-guided UCB1 search).
 # Run: python scripts/run_inference.py --config configs/mcts.yaml [--mock]
 
 n_queries: 20                  # queries to evaluate (mock caps at ~100)
@@ -7,20 +7,9 @@ search:
   rollouts: 10                 # P — rollout budget per query
   max_depth: 3
   top_k_children: 3            # children kept per expansion (PRM-ranked)
-  c_uct: 1.0                   # exploration constant
-  lam: 0.3                     # fixed lambda (ignored when bandit.enabled)
+  c_uct: 1.0                   # UCB1 exploration constant
   early_stop_q: 0.9            # tau_stop — stop when a rollout reward exceeds this
   seed: 0
-
-uct:
-  w_mod: 1.0                   # modality-novelty bonus: new action type
-  w_gran: 0.5                  # modality-novelty bonus: new visual granularity
-
-bandit:                        # Stage 6 — Thompson Sampling over lambda arms
-  enabled: false               # flip to true for adaptive lambda
-  arms: [0.1, 0.3, 0.5, 0.7, 1.0]
-  warmup: 3                    # round-robin warm-up over {0.1, 0.5, 1.0}
-  # Bandit state is per-query by construction (fresh instance per search()).
 
 data:
   benchmark: infoseek

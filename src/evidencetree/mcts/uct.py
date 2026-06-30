@@ -1,63 +1,36 @@
-"""UCT selection with modality novelty bonus (Modality-Coverage UCB).
+"""UCT selection for retrieval-action MCTS.
 
-    UCT(a|s) = Q(a|s) + c * sqrt(ln N(s) / N(s,a)) + lambda * nu(a, pi)
+    UCT(a|s) = Q(a|s) + c * sqrt(ln N(s) / N(s,a))
 
-    Q(a|s)    : backed-up mean reward (PRM prior when unvisited)
-    2nd term  : classic UCB1 exploration (Hoeffding lineage)
-    nu(a, pi) : modality novelty — +w_mod for an action type unseen on the
-                path pi, +w_gran for an unseen visual granularity
+    Q(a|s)   : backed-up mean reward (PRM prior when the edge is unvisited)
+    2nd term : classic UCB1 exploration (Hoeffding lineage)
 
-IMPORTANT: the modality bonus lives in SELECTION, never in the reward function
-(reward judges facts; selection judges exploration policy — report §4.1.5).
+Search is guided purely by the PRM's value estimate Q plus standard UCB1
+exploration. There is deliberately NO modality-coverage / lambda novelty term:
+the PRM's Q is the single quality signal, and bolting an extra exploration prior
+on top only diluted it and added hyperparameters (lambda, w_mod, w_gran) to tune.
 
-Pure functions so the math is unit-testable in isolation; the searcher
-composes them with node statistics.
+Pure function so the math is unit-testable in isolation; the searcher composes
+it with node statistics.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Sequence
-
-from evidencetree.actions.action_space import Action
 
 # Unvisited children sort first (classic UCT treats N=0 as infinite urgency);
-# adding q + lambda*nu on top breaks ties by PRM prior and novelty.
+# adding q on top breaks ties by PRM prior.
 UNVISITED_BASE = 1e6
-
-
-def modality_novelty(
-    action: Action,
-    path_actions: Sequence[Action],
-    w_mod: float = 1.0,
-    w_gran: float = 0.5,
-) -> float:
-    """nu(a, pi): bonus for introducing a new action type / granularity.
-
-    ``path_actions`` is the path pi the candidate would extend (root -> parent).
-    Answer actions get no novelty — they terminate, they don't explore.
-    """
-    if action.modality == "answer":
-        return 0.0
-    nu = 0.0
-    if action.action_type not in {a.action_type for a in path_actions}:
-        nu += w_mod
-    seen_gran = {a.granularity for a in path_actions if a.granularity != "n/a"}
-    if action.granularity != "n/a" and action.granularity not in seen_gran:
-        nu += w_gran
-    return nu
 
 
 def uct_score(
     q_value: float,
     visits: int,
     parent_visits: int,
-    novelty: float = 0.0,
     c: float = 1.0,
-    lam: float = 0.3,
 ) -> float:
-    """Modality-Coverage UCB score for one child edge."""
+    """UCB1 score for one child edge: Q + c * sqrt(ln N_parent / N_child)."""
     if visits == 0:
-        return UNVISITED_BASE + q_value + lam * novelty
+        return UNVISITED_BASE + q_value
     exploration = c * math.sqrt(math.log(max(parent_visits, 1)) / visits)
-    return q_value + exploration + lam * novelty
+    return q_value + exploration

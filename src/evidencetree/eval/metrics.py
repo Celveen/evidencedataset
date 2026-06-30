@@ -6,6 +6,7 @@ answer against the gold answer(s), and reused by Stage 7 evaluation.
 
 from __future__ import annotations
 
+import ast
 import re
 import string
 from collections import Counter
@@ -59,6 +60,60 @@ def _as_list(ground_truths: str | Sequence[str]) -> list[str]:
     if isinstance(ground_truths, str):
         return [ground_truths]
     return list(ground_truths)
+
+
+# --------------------------------------------------------------------------- #
+# InfoSeek relaxed accuracy (rule-based, NO LLM judge)
+# --------------------------------------------------------------------------- #
+# InfoSeek answers are of two kinds:
+#   * STRING questions  -> gold is a list of acceptable strings (answer_eval).
+#   * VALUE questions   -> gold is a numeric range {"wikidata": v, "range": [lo, hi]}.
+# Bare exact_match silently scores EVERY value question 0, because it string-
+# compares the prediction against the dict's repr. This is the official, fully
+# deterministic relaxed metric: a predicted number inside [lo, hi] counts.
+_NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
+
+
+def _extract_numbers(text: str) -> list[float]:
+    nums = []
+    for m in _NUM_RE.findall(text):
+        try:
+            nums.append(float(m.replace(",", "")))
+        except ValueError:
+            continue
+    return nums
+
+
+def _numeric_range_gold(golds: Sequence) -> tuple[float, float] | None:
+    """Return (lo, hi) if any gold encodes an InfoSeek numeric range (dict or its
+    string repr), else None."""
+    for g in golds:
+        obj = g
+        if isinstance(g, str) and "range" in g and "{" in g:
+            try:
+                obj = ast.literal_eval(g)
+            except (ValueError, SyntaxError):
+                continue
+        if isinstance(obj, dict) and isinstance(obj.get("range"), (list, tuple)) \
+                and len(obj["range"]) == 2:
+            try:
+                lo, hi = float(obj["range"][0]), float(obj["range"][1])
+            except (TypeError, ValueError):
+                continue
+            return (min(lo, hi), max(lo, hi))
+    return None
+
+
+def infoseek_accuracy(prediction: str, ground_truths: str | Sequence) -> float:
+    """InfoSeek-style relaxed accuracy. Numeric (VALUE) questions: any number in
+    the prediction within the gold ``range`` -> 1.0. String questions: relaxed
+    exact match over the gold list. Deterministic and transparent (no model)."""
+    golds = _as_list(ground_truths)
+    rng = _numeric_range_gold(golds)
+    if rng is not None:
+        lo, hi = rng
+        return float(any(lo <= n <= hi for n in _extract_numbers(prediction)))
+    return exact_match(prediction, golds)
 
 
 def aggregate(

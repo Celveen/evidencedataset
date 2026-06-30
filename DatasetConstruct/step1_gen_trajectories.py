@@ -115,10 +115,9 @@ def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
         "image_path": query.image_path,
         "gold_answers": query.gold_answers,
         "rollout_t": record.t,
-        "lambda": record.lam,
         "gen_reward": record.reward,          # 生成期引导分（非标签）
         "final_answer": final_answer,
-        "outcome_em": metrics.exact_match(final_answer, query.gold_answers),
+        "outcome_em": metrics.infoseek_accuracy(final_answer, query.gold_answers),
         "steps": steps,
     }
 
@@ -141,26 +140,34 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
     searcher = build_searcher(cfg, queries, corpus, mock)
     dedupe = bool(cfg.get("quality", {}).get("dedupe_within_query", True))
 
-    n_new = 0
+    n_new = n_failed = 0
     for qi, query in enumerate(queries):
         if query.query_id in done_queries:
             continue
-        result = searcher.search(query.question, image_path=query.image_path)
-        rows, seen_sigs = [], set()
-        for record in result.rollout_log:
-            if record.state is None:
-                continue
-            sig = tuple(
-                (a.action_type, getattr(a, "query", None) or getattr(a, "text", ""))
-                for a in record.state.actions_taken
-            )
-            if dedupe and sig in seen_sigs:
-                continue
-            seen_sigs.add(sig)
-            rows.append(trajectory_dict(query, record, t_index=len(rows)))
-        n_new += append_jsonl(out, rows)
+        # Per-query isolation: a single failed query (API content-moderation,
+        # rate-limit, timeout, ...) must NEVER abort the whole batch. Log + skip;
+        # --force/resume re-attempts skipped ones on the next run.
+        try:
+            result = searcher.search(query.question, image_path=query.image_path)
+            rows, seen_sigs = [], set()
+            for record in result.rollout_log:
+                if record.state is None:
+                    continue
+                sig = tuple(
+                    (a.action_type, getattr(a, "query", None) or getattr(a, "text", ""))
+                    for a in record.state.actions_taken
+                )
+                if dedupe and sig in seen_sigs:
+                    continue
+                seen_sigs.add(sig)
+                rows.append(trajectory_dict(query, record, t_index=len(rows)))
+            n_new += append_jsonl(out, rows)
+        except Exception as e:  # noqa: BLE001 - isolate per-query failures
+            n_failed += 1
+            log.warning("  step1: query %s skipped (%s: %s)",
+                        query.query_id, type(e).__name__, str(e)[:160])
         if (qi + 1) % max(1, len(queries) // 10) == 0:
-            log.info("  step1: %d/%d queries", qi + 1, len(queries))
+            log.info("  step1: %d/%d queries (%d skipped)", qi + 1, len(queries), n_failed)
 
     all_rows = list(read_jsonl(out))
     n_traj = len(all_rows)
@@ -168,8 +175,9 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
         mean_steps = sum(len(r["steps"]) for r in all_rows) / n_traj
         outcome_rate = sum(r["outcome_em"] for r in all_rows) / n_traj
         log.info(
-            "step1 done: %d trajectories (+%d new) | mean steps %.2f | outcome rate %.3f -> %s",
-            n_traj, n_new, mean_steps, outcome_rate, out,
+            "step1 done: %d trajectories (+%d new, %d queries skipped) | mean steps "
+            "%.2f | outcome rate %.3f -> %s",
+            n_traj, n_new, n_failed, mean_steps, outcome_rate, out,
         )
     return out
 

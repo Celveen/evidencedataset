@@ -41,12 +41,12 @@ def make_tracer():
     def tracer(ev):
         e = ev["event"]
         if e == "rollout_start":
-            print(f"\n{'='*78}\n● ROLLOUT t={ev['t']}  (lambda={ev['lam']})")
+            print(f"\n{'='*78}\n● ROLLOUT t={ev['t']}")
         elif e == "select":
-            print("  SELECT (UCT = Q + c·√(lnN/n) + λ·novelty):")
+            print("  SELECT (UCT = Q + c·√(lnN/n)):")
             for c in ev["candidates"]:
                 print(f"     {c['action'][:46]:46}  UCT={c['uct']:.3f} "
-                      f"(Q={c['q']:.2f} N={c['visits']} prior={c['prior']:.2f} nov={c['novelty']:.1f})")
+                      f"(Q={c['q']:.2f} N={c['visits']} prior={c['prior']:.2f})")
             print(f"     -> chosen: {ev['chosen']}")
         elif e == "expand":
             print("  EXPAND (proposer candidates, PRM prior; keep top-k):")
@@ -88,7 +88,7 @@ def main() -> int:
     scorer = HeuristicOverlapScorer()
 
     cfg = SearchConfig(rollouts=3, max_depth=3, top_k_children=2,
-                       c_uct=1.0, lam=0.3, early_stop_q=2.0, seed=0)
+                       c_uct=1.0, early_stop_q=2.0, seed=0)
     searcher = MCTSSearcher(executor, proposer, scorer, cfg, tracer=make_tracer())
 
     print("QUERY: 'What is the wingspan of this owl?'  (+ owl query image)")

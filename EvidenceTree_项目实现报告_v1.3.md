@@ -29,6 +29,12 @@
 > 5. **方法论原则备注**：理论 bound 提供 motivation 与"学术严谨性"信号，但 bandit 的真正说服力来源是消融实验（尤其 consistency 指标），两者分工明确
 > 6. **精简动作空间**：移除 `parallel_search`（树展开已覆盖多候选探索，"合并多源证据"可用串行轨迹表达，详见附录 B.7）；`crop`/`zoom` 标注为"待 Pilot 决定"（去留取决于 benchmark 中细粒度视觉 query 占比，可能合并为单一 `focus` 动作）
 
+> **v1.4 相对 v1.3 的修订（聚焦化）**：
+> 1. **移除 self-adjusting bandit 子组件**（删除原 §3.3.1 形式化机制 + Algorithm 1 + §3.3.2 的 Thompson Sampling regret bound + §4.5 A6 全部消融 + 风险 7）。理由：PRM 的 $Q(a)$ 已是检索动作质量的核心信号，再叠一个 inference-time 的 λ 自适应旋钮会**稀释 PRM 的作用、徒增一整套消融负担**，且在 $P=10$ 预算下 Thompson Sampling 难以可信收敛。这是 Contribution 2 的一个**子组件**，移除后 Contribution 2 收敛为单一干净的"PRM 引导树搜索"，重点更集中（三个顶层 Contribution——PRM / MCTS / ETBench-Open 数据集——不变）。
+> 2. **移除 Modality-Coverage UCB 的 novelty 项**（删除原 §3.3 的 $\lambda\cdot\nu(a,\pi)$ bonus 与 §4.5 A2 消融）。理由：当动作空间收敛为 `{text_search, image_search, answer}`（见 §3.1）后，可"覆盖"的模态/粒度很少，该 bonus 既无用武之地又引入 $\lambda, w_{mod}, w_{gran}$ 三个待调超参。Selection 回归**纯 UCB1**（$Q + c\sqrt{\ln N/n}$），让 PRM 的 $Q$ 成为唯一质量信号。
+> 3. **Contribution 2 重定位**：从"Self-Adjusting Modality-Coverage UCB"改为"Retrieval-Action MCTS（PRM 引导的标准 UCB1 树搜索）"，多模态能力由 `image_search` 的**实体消歧**作用承载（图 query 命中实体页 → 再 text_search 查属性），而非靠 UCB 的探索偏好。
+> 4. **代码同步**：删除 `mcts/bandit.py`、`uct.py` 的 `modality_novelty`、`SearchConfig` 的 `lam/w_mod/w_gran/adaptive_lambda/bandit_*`；73→59 测试全过。
+
 ---
 
 ## 一、问题定义
@@ -114,31 +120,21 @@ EvidenceTree 提供两个紧耦合的技术 contribution，外加一个数据集
 - AR-MCTS 的 PRM 评分 reasoning steps，不评分检索动作
 - 没有已发表工作训练过同时具备这三个属性的 PRM
 
-### Contribution 2: Retrieval-Action MCTS with Self-Adjusting Modality-Coverage UCB
+### Contribution 2: Retrieval-Action MCTS（PRM 引导的树搜索）
 
-**这是什么**：一个把 MCTS 应用在检索动作空间的搜索算法，并在 inference 时通过 bandit 自适应调整探索行为。
+**这是什么**：一个把 MCTS 应用在**检索动作空间**的搜索算法，由 Contribution 1 的 grounded PRM 引导，选择标准为经典 UCB1。
 
 **树结构**：
 - 节点：部分上下文状态 (query, image, evidence_bundle)
 - 边：类型化检索动作
 - 叶子：answer 动作的执行
 
-**Selection rule（Modality-Coverage UCB）**：
+**Selection rule（标准 UCB1）**：
 ```
-UCT(action) = Q(action) 
-            + c · √(ln N(parent) / N(action))
-            + λ · modality_novelty(action, current_path)
+UCT(action) = Q(action) + c · √(ln N(parent) / N(action))
 ```
-其中 modality_novelty 在动作引入路径上未出现过的模态/工具/粒度时给一个 bonus。
-
-**子组件：Inference-time Self-Adjusting Search（v1.1 新增）**：
-
-固定的 λ 值（如 0.3）无法应对不同 query 的探索需求差异——视觉密集型 query 需要激进的跨模态探索（λ 大），文本密集型 query 上跨模态探索是浪费（λ 小）。我们引入一个 inference-time 的 bandit 机制，在单 query 的 MCTS 运行中自适应调整 λ：
-
-- 把 λ 离散化为 5 个 arm: {0.1, 0.3, 0.5, 0.7, 1.0}
-- 每次 rollout 前用 Thompson Sampling 选择 λ
-- Rollout 完成后根据 reward 是否高于历史 median 更新 Beta 后验
-- 整个机制在单 query 内独立运行，不跨 query 共享状态——**保留 frozen-model 评估范式**
+其中 `Q(action)` 是 PRM 给出的动作价值（exploitation），第二项是经典 UCB1 探索项。
+**没有额外的 λ·novelty 项**：PRM 的 $Q$ 已经是质量信号，再叠一个 hardcoded 的探索偏好只会稀释它、并引入待调超参（v1.4 移除，详见变更说明）。
 
 **Expansion**：节点扩展时，由 PRM 在候选动作空间上排序，选 top-k 作为 children。
 
@@ -148,11 +144,12 @@ UCT(action) = Q(action)
 
 **Termination**：早停（PRM 对 root 的 best path Q 值高于阈值）或 budget 耗尽。
 
+**多模态能力的来源**：不靠 UCB 的探索偏好，而靠 `image_search` 的**实体消歧**作用——纯文本 RAG 无法判定"图里这个东西是谁"，`image_search` 用图 query 命中语料中的实体页，再由 `text_search` 查其属性。这一"先图后文"的顺序由 PRM 的 $Q$ 自然学到（见 §3.1、policy prompt），是本系统多模态价值的真正载体。
+
 **为什么这是 contribution**：
 - AR-MCTS 的 MCTS 在 reasoning space，不在 action space
 - RCTS 的 MCTS 在 retrieved-pair-set space，不在 action space
-- Modality-Coverage UCB 是针对多模态 RAG 特有的 exploration 偏好设计的，已有 MCTS 工作没有这个机制
-- Self-adjusting bandit 让 selection 行为不再是 hardcoded 先验，而是 inference-time 从自己的运行反馈中学习——这一点与 self-evolution 文献的核心思想对话，但保持 frozen-model 评估范式
+- 本系统把搜索建在**检索动作空间**上，每条边都改变 state（retrieval 是 state-modifying 的），并由一个**针对状态修改型动作训练的 grounded PRM** 引导——这是已有 MCTS-for-RAG 工作都没有的组合
 
 ### Contribution 3: ETBench-Open（数据集）
 
@@ -176,11 +173,28 @@ UCT(action) = Q(action)
 
 | 动作类型 | 参数 | 描述 | 状态 |
 |---------|------|------|------|
-| `text_search(q)` | 文本 query | 在文本检索器上 retrieve | 必需 |
-| `image_search(img_crop)` | 图像区域 | 用图像作为 query 检索 | 必需 |
+| `text_search(q)` | 文本 query | 用**文本**作为 query 检索语料 | 必需 |
+| `image_search(image, region?)` | 图像（可选区域） | 用**图像**作为 query 检索语料 | 必需 |
 | `crop(region)` | bbox 坐标 | 把当前 image 的某个区域作为新 image（改变空间注意力） | 待 Pilot 决定 |
 | `zoom(region, factor)` | 区域 + 倍数 | 放大区域细节（改变分辨率） | 待 Pilot 决定 |
 | `answer(text)` | 答案文本 | 终止动作 | 必需 |
+
+**动作空间按 query 模态切分（v1.3 定版，2026-06 收口）**：
+
+检索动作只按 **query（检索输入）的模态**区分，而**不**按检索结果的模态区分——
+`text_search` 以文本去检索，`image_search` 以图像去检索，两者查询的是**同一个统一
+CLIP 语料索引**，因此一次检索返回的结果**既可能是文本侧文档、也可能是图像侧文档**
+（取决于哪一侧与 query 更相似）。这把动作空间收敛为 `{text_search, image_search,
+answer}` 三个。
+
+> **设计演化记录**：v1.3 早期曾尝试把检索动作按 (query 模态 × 结果模态) 拆成 2×2
+> 共四个动作（`text_search` / `text_to_image` / `image_to_text` / `image_search`）。
+> 后续收口为按 query 模态切分的两个搜索动作，理由有三：(1) 在 P=10 的探索预算下，
+> 四个搜索分支会把每个分支的访问次数稀释一半，伤害搜索质量；(2) "结果该是文本还是
+> 图像"本就该由检索器在统一语料里按相关度自然决定，硬编码进动作类型是把检索器的工作
+> 提前到动作定义里，既不必要也限制了灵活性；(3) grounding 改为按**实际返回结果**的
+> 模态打分（见 §3.2），动作类型不再需要承载"结果模态"这一信息。该收口对应代码提交
+> `[ActionSpace] Compress to text_search/image_search/answer`，73/73 测试通过。
 
 **关于 crop / zoom（视觉操作动作）**：
 
@@ -206,14 +220,33 @@ $$R(\tau) = \alpha \cdot R_{\text{local}}(\tau) + (1-\alpha) \cdot R_{\text{outc
 **Local grounding reward**：
 $$R_{\text{local}}(\tau) = \frac{1}{|\tau|} \sum_{a_i \in \tau} g(a_i, s_i)$$
 
-`g(a, s)` 是动作 `a` 在状态 `s` 下的 grounded 评分，根据动作类型不同有不同的实现：
+`g(a, s)` 是动作 `a` 执行后的 grounded 评分。**关键定义（v1.3 收口）：grounding
+衡量「这一步检索回的结果与 question 的相关度」，而不是「动作的 query 输入与 question
+的对齐度」。** 改用结果端打分有两个直接动因：(1) `image_search` 的 query 图是状态自带、
+固定的，"输入 vs question"对它没有区分度，无法据此评分；(2) 防止 policy 臆造实体已由
+policy prompt 约束，grounding 该回答的问题是"这步检索到底有没有捞到有用的东西"——这只能
+看结果。空结果 → `g = 0`。
 
-| 动作类型 | grounding signal `g` |
+打分**按每个返回结果的实际模态**进行，而非按动作类型——因为 `text_search` 和
+`image_search` 查询的是同一个语料，一步的结果可能混有文本侧与图像侧文档：
+
+| 返回结果模态 | grounding signal `g` |
 |---------|---------------------|
-| `text_search(q)` | query 与原 question 的语义对齐度（独立 cross-encoder） |
-| `image_search(img)` | 图像 crop 与 question 提到的视觉实体的对齐度（独立 vision-language matching model） |
-| `crop` / `zoom` | 操作后区域是否包含 question 关键 entity（独立 detection / OCR 模型） |
+| 文本结果 | `cos(CLIP_text(question), CLIP_text(result))` |
+| 图像结果 | `cos(CLIP_text(question), CLIP_image(result))` |
+| 一步多个/多模态结果 | 各结果分别打分后取 **max**（这一步的 grounding ≙ 它最相关的那条结果） |
 | `answer` | 不参与 local，由 outcome 决定 |
+
+**为什么用统一 CLIP 空间**：文本结果与图像结果都用**同一个 CLIP 模型**、对齐到**同一个
+`CLIP_text(question)` 锚点**。若文本用 sentence-transformer、图像用 CLIP，两者余弦尺度不同，
+PRM 会把"尺度差"误当成"动作质量差"，系统性偏向某类动作而污染训练。唯一细节：同模态
+（文本-文本）余弦系统性高于跨模态（文本-图像），故两类各配一个经验 `cos band`
+（文本默认 0.5/0.9、图像默认 0.15/0.32）把余弦校准到同一个"相关性 0–1"语义；band 须在
+服务器上按真实余弦分布重新校准。离线/mock 模式下退化为文本结果取 question 内容词召回率、
+图像结果取中性 0.5，不加载任何模型。
+
+> `crop` / `zoom` 一旦在 Stage 0.4 后实现，其 grounding 同理按"操作后区域里检索/识别到的
+> 内容 vs question"打分（detection / OCR），并入上表的结果端口径，不另起一套。
 
 **关键性质**：所有 `g` 都是 graded score（0–1 连续值），不是 binary。这是相对 GroundedPRM 的一个修正——RAG 场景下的"对/错"判断粒度不应该是 binary。
 
@@ -234,125 +267,29 @@ $$R_{\text{outcome}}(s, a) = \frac{1}{|\mathcal{T}(s,a)|} \sum_{\tau \in \mathca
 
 **默认 α=0.5**，sensitivity ablation 给三档 (0.2 / 0.5 / 0.8)。
 
-### 3.3 Modality-Coverage UCB
+### 3.3 UCB1 Selection
 
-Selection rule：
-$$\text{UCT}(a) = Q(a) + c \cdot \sqrt{\frac{\ln N(\text{parent})}{N(a)}} + \lambda \cdot \nu(a, \pi)$$
+Selection rule（经典 UCB1，无额外 novelty 项）：
+$$\text{UCT}(a) = Q(a) + c \cdot \sqrt{\frac{\ln N(\text{parent})}{N(a)}}$$
 
-其中 `ν(a, π)` 是动作 `a` 相对当前路径 `π` 的 modality novelty bonus：
-$$\nu(a, \pi) = \mathbb{1}[\text{type}(a) \notin \text{types}(\pi)] + 0.5 \cdot \mathbb{1}[\text{granularity}(a) \notin \text{granularities}(\pi)]$$
+- 第一项 $Q(a)$：PRM 给出的动作价值（exploitation）；边未访问时用 PRM prior。
+- 第二项：经典 UCB1 探索项（Hoeffding 血统，见 §3.3.1）。
 
-简单来说：
-- 如果路径上还没用过这个动作类型，加 1
-- 如果路径上还没用过这个粒度（whole image / cropped region），再加 0.5
+**为什么不加 modality-coverage 的 $\lambda\cdot\nu(a,\pi)$ 项**（v1.4 移除）：动作空间收敛为 `{text_search, image_search, answer}`（§3.1）后，可"覆盖"的模态/粒度极少，该 bonus 无用武之地；而它会引入 $\lambda, w_{mod}, w_{gran}$ 三个待调超参，并与 PRM 的 $Q$ 抢"该探索哪个分支"的决定权、稀释 PRM 信号。让 $Q$ 做唯一质量信号、UCB1 做标准探索，更干净也更少消融负担。
 
-**为什么 modality bonus 在 selection rule 而不在 reward**：
-- Reward 应该衡量"这条 trajectory 实际有多好"——是事实判断
-- Selection 应该衡量"这个分支值不值得探索"——是策略判断
-- 把 modality 偏好放在 selection 里，让 reward 信号保持低噪且校准良好
+**默认 $c=1.0$**，做 sensitivity ablation。
 
-**默认 λ=0.3**，与 c 一起做 grid search ablation。
+### 3.3.1 UCB1 的理论血统
 
-### 3.3.1 Inference-time Self-Adjusting Search（v1.1 新增）
-
-固定的 λ 假设了所有 query 共享同样的最优探索偏好——这是个静态先验，是 EvidenceTree 设计中**唯一一个不依赖数据学习**的环节。我们用一个轻量 bandit 机制让这个先验在推理时自我调整。
-
-**符号系统**：
-
-| 符号 | 含义 |
-|------|------|
-| $P$ | 单 query 的 rollout 预算（默认 10） |
-| $\mathcal{A} = \{\lambda_1, ..., \lambda_K\}$ | $K=5$ 个候选 λ 值，$\{0.1, 0.3, 0.5, 0.7, 1.0\}$ |
-| $t \in \{1,...,P\}$ | rollout 序号 |
-| $\lambda^{(t)}$ | 第 $t$ 次 rollout 选用的 λ |
-| $r^{(t)}$ | 第 $t$ 次 rollout 的 PRM reward |
-| $(\alpha_k^{(t)}, \beta_k^{(t)})$ | arm $k$ 在第 $t$ 步的 Beta 后验参数 |
-
-**核心机制（形式化）**：
-
-每个 query 推理开始时初始化独立的 Thompson Sampling bandit，先验 $\alpha_k^{(1)} = \beta_k^{(1)} = 1$（uniform prior）。
-
-*Step 1 — 选 λ*。前 3 次 round-robin warm-up，之后用 Thompson Sampling：
-
-$$
-\lambda^{(t)} = \begin{cases} \lambda_{\sigma(t)}, & t \leq 3 \quad (\text{round-robin，覆盖 } \{0.1, 0.5, 1.0\}) \\[4pt] \lambda_{k^*}, \;\; k^* = \arg\max_{k} \theta_k^{(t)}, \;\; \theta_k^{(t)} \sim \text{Beta}(\alpha_k^{(t)}, \beta_k^{(t)}), & t > 3 \end{cases}
-$$
-
-*Step 2 — 用选定 λ 跑 rollout*，得到 reward $r^{(t)} = \text{PRM}(\pi^{(t)})$，其中 $\pi^{(t)} = \text{MCTS-Rollout}(s_0, \lambda^{(t)})$。
-
-*Step 3 — 动态 median 阈值二值化*。定义动态阈值与成功信号：
-
-$$
-m^{(t)} = \text{median}\big(\{r^{(\tau)}\}_{\tau=1}^{t-1}\big), \qquad z^{(t)} = \mathbb{1}[r^{(t)} > m^{(t)}]
-$$
-
-*Step 4 — Beta 后验更新*（仅更新本次被选中的 arm $k^*$）：
-
-$$
-\alpha_{k^*}^{(t+1)} = \alpha_{k^*}^{(t)} + z^{(t)}, \qquad \beta_{k^*}^{(t+1)} = \beta_{k^*}^{(t)} + (1 - z^{(t)})
-$$
-
-其余 arm 后验不变：$(\alpha_k^{(t+1)}, \beta_k^{(t+1)}) = (\alpha_k^{(t)}, \beta_k^{(t)})$ for $k \neq k^*$。
-
-**Algorithm 1: Inference-time Self-Adjusting Search**
-
-```
-Input : query q, rollout budget P, arms A = {λ_1,...,λ_K}
-Output: best answer ŷ
-
- 1: s_0 ← (q, ∅)                              # tree root
- 2: (α_k, β_k) ← (1, 1)  for all k            # uniform Beta priors
- 3: R ← ∅                                     # reward history
- 4: for t = 1 to P do
- 5:     if t ≤ 3 then
- 6:         λ ← λ_{σ(t)}                       # round-robin warm-up
- 7:     else
- 8:         θ_k ~ Beta(α_k, β_k)  for all k    # Thompson sampling
- 9:         λ ← λ_{argmax_k θ_k}
-10:     π ← MCTS-Rollout(s_0, λ)              # UCT with bonus weight λ
-11:     r ← PRM(π)
-12:     if t > 1 then
-13:         m ← median(R)
-14:         z ← 1[r > m]
-15:         α_{k*} ← α_{k*} + z ;  β_{k*} ← β_{k*} + (1 − z)
-16:     R ← R ∪ {r}
-17:     if r > τ_stop then break              # early stopping
-18: return ŷ ← answer of argmax_π PRM(π)
-```
-
-**设计选择的论证**：
-
-*为什么用 Thompson Sampling 而非 ε-greedy 或 UCB1*：TS 在 small-sample regime（$P=10$）下探索更平滑；天然支持用后验采样替代 point estimate，更鲁棒；Beta-Bernoulli 后验对小样本计算稳定。
-
-*为什么 $K=5$ 而非 10*：$P=10$ 预算下，$K=10$ 平均每 arm 仅 1 次观测，bandit 退化为随机选择；$K=5$ 平均每 arm 2 次观测，可稳定收敛。$K=5$ 跨度 0.1–1.0 已覆盖合理范围。
-
-*为什么用"高于历史 median"判定*：dynamic threshold 不依赖 reward 绝对标定，对 PRM calibration drift 鲁棒，自动适应不同 query 难度。
-
-### 3.3.2 Theoretical Justification（v1.3 新增）
-
-我们的探索机制建立在 multi-armed bandit 的理论框架上，借用两个学界公认的理论工具作为依据。
-
-**UCB1 confidence bound（Hoeffding 血统）**：
-
-UCT selection rule 中的 exploration 项并非经验性设计，而是源于 UCB1 算法（Auer et al., 2002）。UCB1 的选择规则为：
+UCT selection rule 的 exploration 项并非经验设计，而是源于 UCB1（Auer et al., 2002）：
 
 $$
 k^{(t)} = \arg\max_{k} \left[ \hat{\mu}_k + \sqrt{\frac{2\ln t}{n_k}} \right]
 $$
 
-其中 confidence radius $\sqrt{2\ln t / n_k}$ 由 Hoeffding 不等式导出，保证真实均值以高概率落在界内。**我们 UCT 公式里的 $c\sqrt{\ln N(s)/N(s,a)}$ 正是这一 bound 的形式**——MCTS 的 UCT 本就是 UCB 在树上的推广（UCT = UCB applied to Trees，Kocsis & Szepesvári, 2006）。这给我们的 exploration 项一个有 50 年历史的统计学血统。
+其中 confidence radius $\sqrt{2\ln t / n_k}$ 由 Hoeffding 不等式导出。**我们 UCT 里的 $c\sqrt{\ln N(s)/N(s,a)}$ 正是这一 bound 的形式**——MCTS 的 UCT 本就是 UCB 在树上的推广（UCT = UCB applied to Trees，Kocsis & Szepesvári, 2006），给 exploration 项一个有数十年血统的统计学依据。
 
-**Thompson Sampling regret bound**：
-
-对于 λ 的自适应选择，Thompson Sampling 在 $K$-臂 Bernoulli 设定下享有 problem-independent regret bound（Agrawal & Goyal, 2017）：
-
-$$
-\mathbb{E}[\text{Regret}(T)] = O\left(\sqrt{KT\ln T}\right)
-$$
-
-代入我们的设定（$K=5$, $T=P=10$），累积 regret 约 $O(\sqrt{5 \cdot 10 \cdot \ln 10}) \approx O(10.7)$，为 bandit 在有限 rollout 预算内收敛到近优 arm 提供理论依据。
-
-**重要 caveat（诚实声明）**：上述 regret bound 是 asymptotic（$T \to \infty$）结果，而我们的 $T=10$ 极小，渐近 bound 在此规模下的实际保证较弱。因此该 bound **仅提供理论 motivation，bandit 在小预算下的实际收敛行为由 §4.5 的消融实验（A6.3 收敛速度、A6.2 consistency 指标）提供 empirical evidence**。理论负责"严谨性 motivation"，实验负责"真有效"，两者分工明确，不以理论替代实验。
+> **v1.4 移除**：v1.1–v1.3 曾在此处引入一个 inference-time 的 Thompson Sampling bandit 自适应调 λ（原 §3.3.1 形式化机制 + Algorithm 1）及其 regret bound（原 §3.3.2 Theoretical Justification）。已整体删除——PRM 的 $Q$ 已是核心质量信号，bandit 稀释其作用、徒增 §4.5 A6 一整套消融，且在 $P=10$ 预算下难以可信收敛。详见开头 v1.4 变更说明。
 
 ### 3.4 PRM 架构与训练
 
@@ -525,10 +462,10 @@ parameters: crop(0.2, 0.3, 0.5, 0.6)
 - 两源融合（α=0.5）
 - 三档 sensitivity（α=0.2 / 0.5 / 0.8）
 
-**A2 — Modality-Coverage UCB 是否有效**
-- 标准 UCB（λ=0）
-- Modality-Coverage UCB（固定 λ=0.3）
-- 不同固定 λ 值的 sensitivity (0.1 / 0.3 / 0.5 / 0.7 / 1.0)
+**A2 — UCB 探索常数 c 的敏感性**
+- 纯贪心 PRM（c=0）
+- 标准 UCB1（c ∈ {0.5, 1.0, 2.0}）
+- 关注点：树搜索相对 greedy / Best-of-N 的增益是否稳健（呼应 Stage 0.2）
 
 **A3 — PRM 训练阶段贡献**
 - 只 Stage 1 (SFT)
@@ -544,53 +481,9 @@ parameters: crop(0.2, 0.3, 0.5, 0.6)
 - depth=2/3/5
 - rollouts=4/10/20
 
-**A6 — Self-Adjusting Search 是否有效（v1.1 新增，v1.3 形式化强化）**
+**A6 — （已移除，v1.4）**
 
-这是 inference-time bandit 机制的关键 ablation。**bandit 是我们自己设计的组件，所有超参数（K=5、warm-up=3、λ 取值）都需要消融支撑，不能拍脑袋。** 必须包含以下五部分：
-
-*A6.1 主对比* — Bandit vs 最佳固定 λ：
-- 固定 λ ∈ {0.1, 0.3, 0.5, 0.7, 1.0}（5 个固定值各跑一遍）
-- **Bandit-based adaptive λ**（我们的方法）
-
-期望结果：Bandit 应在所有 benchmark 的平均表现上 ≥ 任意单一固定 λ，即 $\text{Acc}(\text{bandit}) \geq \max_k \text{Acc}(\text{fixed } \lambda_k)$。若 bandit 仅接近最佳固定 λ，说明机制无效——回归固定 λ。
-
-*A6.2 Consistency 指标*（最关键的 sanity check，v1.3 形式化）：
-
-这是回应"bandit 是否真在学习、还是纯噪声"的硬证据。对每个 query $q$，用 GT 离线反算真实最优 λ：
-
-$$
-\lambda^*_q = \arg\max_{\lambda \in \mathcal{A}} \text{Acc}\big(\text{MCTS-Rollout}(q, \lambda), \, y^*_q\big)
-$$
-
-bandit 在线收敛到的 λ：
-
-$$
-\hat{\lambda}_q = \lambda_{\,\arg\max_k \frac{\alpha_k^{(P)}}{\alpha_k^{(P)} + \beta_k^{(P)}}}
-$$
-
-定义一致性指标：
-
-$$
-\text{Consistency} = \frac{1}{|\mathcal{Q}|}\sum_{q \in \mathcal{Q}} \mathbb{1}[\hat{\lambda}_q = \lambda^*_q]
-$$
-
-**判定标准**：若 $\text{Consistency} \gg 1/K = 0.2$（随机基线），证明 bandit 真在学习；若接近 0.2，说明 bandit 没提取到信号，机制失效。
-
-*A6.3 Convergence 速度* — Bandit 在 P 次 rollout 内的收敛行为：
-- 跟踪每 rollout 后"最佳 arm 后验均值 $\alpha_k/(\alpha_k+\beta_k)$"
-- 报告平均收敛步数
-- 若 10 次内大部分 query 未收敛，把 default P 提到 15
-
-*A6.4 Arm 数量敏感性*（v1.3 新增）— 验证 $K=5$ 的选择：
-- 对比 $K \in \{3, 5, 10\}$
-- 指标：accuracy + bandit 结果方差
-- 期望：$K=10$ 因每 arm 观测不足，性能持平或更差且方差更大，验证 $K=5$ 是 $P=10$ 预算下的甜蜜点
-
-*A6.5 Warm-up 轮数*（v1.3 新增）— 验证"前 3 次轮询"：
-- 对比 warm-up ∈ {0, 3, 5}
-- 期望：warm-up=0 时早期 Thompson 采样不稳定，warm-up=3 在 accuracy 和方差上最优
-
-**形式化消融的意义**：A6.4/A6.5 把"K=5、warm-up=3"从"我们设的值"变成"消融验证的最优值"。这是回应审稿人"参数怎么定的"的标准做法——用实验支撑而非声明。
+self-adjusting bandit 已删除，故其全套消融（A6.1 主对比 / A6.2 consistency / A6.3 收敛 / A6.4 arm 数 / A6.5 warm-up）一并取消。这正是移除该组件的动机之一：少一个自设计组件，就少一整套必须自证的消融负担。
 
 ### 4.6 计算预算
 
@@ -666,15 +559,7 @@ $$
 - 主表用 EM/F1（更客观），LLM judge 作为辅助指标
 - 对 ambiguous case 做人工抽样
 
-**风险 7：Self-adjusting bandit 在 P=10 预算下收敛不足（v1.1 新增）**
-
-5 个 arm 平均每 arm 2 次观测，理论上可以让 Thompson Sampling 收敛，但实际可能受 reward 噪声影响导致 bandit 选择仍接近随机。如果 ablation A6 发现 bandit 没显著优于最佳固定 λ，这个子组件失效。
-
-应对：
-- **首选诊断手段**：A6.2 的 per-query-type λ 分布分析——如果视觉 vs 文本 query 上 bandit 收敛的 λ 显著不同，机制有效；否则无效
-- **如果机制无效**：直接砍掉这个子组件，论文回到固定 λ，整体仍有两个主 contribution
-- **如果机制部分有效**：考虑把 P 提到 15（推理时间增加 50%，但 bandit 有更多探索机会）
-- **关键原则**：这个子组件的存在不应该让主线工作变脆弱。它的 fallback 必须能干净退出
+**风险 7（已移除，v1.4）**：原"self-adjusting bandit 在 P=10 下收敛不足"风险随 bandit 组件一并删除。
 
 **风险 8：Rationale 质量决定 PRM 训练效果（v1.2 新增）**
 
@@ -693,15 +578,15 @@ $$
 应对（分阶段截止时间）：
 - Month 1–2：Pilot study（VisualPRM 直接用作 RAG re-ranker 的失败模式诊断 + 小规模 rationale 生成质量验证）
 - Month 3–6：ETBench-Open 数据集构造（含 rationale label 生成）+ PRM Stage 1+2 训练
-- Month 7：MCTS 算法实现 + 主表实验（固定 λ 版本）
-- Month 8：集成 self-adjusting bandit + 完成 A6 ablation；若失败则回退到固定 λ
+- Month 7：MCTS 算法实现（PRM 引导 UCB1）+ 主表实验
+- Month 8：搜索侧消融（A2 c 敏感性、A5 depth/rollout 预算）+ Stage 0.2 复核（MCTS vs BoN）
 - Month 9：robustness 实验
 - Month 10–11：剩余 ablation + 论文撰写
 - Month 12：投稿
 
 **Fallback 策略**：
 - 如果时间紧，砍掉 robustness study（放 future work）
-- 如果 PRM 训练不收敛，退化到 frozen-VisualPRM + custom UCB（依然有 contribution 2）
+- 如果 PRM 训练不收敛，退化到 frozen-VisualPRM + 标准 UCB1（依然有 contribution 2）
 - 如果 MCTS 比 BoN 提升不大，重新定位为"a process reward model for retrieval actions, evaluated with BoN"——纯 PRM 方向也能 carry 一篇论文
 
 ---
@@ -710,7 +595,7 @@ $$
 
 ### 6.1 一句话总结
 
-> EvidenceTree 是第一个在**检索动作空间**上做 MCTS 的多模态 RAG 系统，配合一个**针对状态修改型动作**训练的 grounded PRM，以及一个 **inference-time self-adjusting 的探索机制**。
+> EvidenceTree 是第一个在**检索动作空间**上做 MCTS 的多模态 RAG 系统，由一个**针对状态修改型检索动作**训练的 grounded PRM 引导搜索（标准 UCB1）。
 
 ### 6.2 三段式 narrative（用于 introduction）
 
@@ -718,7 +603,7 @@ $$
 
 **段 2 — 关键观察**：GroundedPRM（concurrent work）已经证明 grounded process supervision 能大幅提升数学推理。但它的 grounding 假设了 state 是固定的——这在 RAG 场景**根本不成立**，因为每个检索动作都改变了 state。
 
-**段 3 — 我们的方法**：EvidenceTree 把 MCTS 建立在检索动作空间，配合一个动作类型化、模态特定 grounded 的 PRM。我们进一步引入一个 inference-time self-adjusting 机制：MCTS 的探索行为通过 bandit 反馈在单 query 内动态调整，避免对所有 query 使用统一的静态探索先验。三个组件加起来解决了 state-modifying credit assignment 这个 GroundedPRM 没碰过的问题，同时让搜索行为从"hardcoded 先验"演化为"从自己的运行中学习"——这与 self-evolution 文献的核心思想对话，但保持了 frozen-model 评估范式的严谨性。
+**段 3 — 我们的方法**：EvidenceTree 把 MCTS 建立在检索动作空间，配合一个动作类型化、模态特定 grounded 的 PRM，由标准 UCB1 引导（PRM 的 $Q$ 是唯一质量信号）。两个组件解决了 state-modifying credit assignment 这个 GroundedPRM 没碰过的问题——把 grounded process supervision 从 fixed-state reasoning 推广到每一步都改变 state 的检索动作，并保持 frozen-model 评估范式的严谨性。
 
 ### 6.3 与各先前工作的精确差异
 
@@ -729,7 +614,6 @@ $$
 | GroundedPRM | 双源 grounding philosophy；low-data high-grounding 训练范式 | 从 fixed-state reasoning 推广到 state-modifying actions；从 binary 改为 graded grounding；多模态 |
 | VisualPRM | 起点 checkpoint；多模态视觉推理能力 | 加 action-conditional value head；训练数据从 reasoning step 改为 retrieval action |
 | MMSearch-R1 | agentic 多模态 RAG 的动作空间灵感 | 从 outcome-only RL 改为 process-rewarded MCTS |
-| Self-Rewarding LMs / DeepSeek-R1 / Mulberry | self-evolution 的核心理念 | 操作层次从 parameter-level 下降到 inference-time search-policy level；保持 frozen-model 评估 |
 
 ---
 
@@ -741,11 +625,11 @@ $$
 | 与最相关 prior work 的差异 | ✅ 与 RCTS / AR-MCTS / GroundedPRM 都有明确边界 |
 | Novelty 强度 | ✅ 没有已发表工作同时解决 A+B+C |
 | ICLR 接受门槛 | ✅ 两个核心 contribution 都是方法级，不是工程级 |
-| 与当前热点对齐 | ✅ Self-adjusting bandit 与 self-evolution 文献形成对话 |
+| 与当前热点对齐 | ✅ grounded process reward + multimodal RAG + test-time search 均为当前活跃方向 |
 | 实验可复现性 | ✅ 检索与推理全程无 API 依赖；rationale label 一次性离线生成后固定可发布 |
 | 计算可行性（≤8B 本地 + 服务器租赁） | ✅ 仅 $800 rationale 生成费用，1×8 H100 × 3–4 周 + 1×4 A100 × 2 周 |
-| 时间可行性（12 个月） | ⚠️ 紧，需要分阶段截止；self-adjusting 集成预留 1 个月 |
-| 失败时的 fallback | ✅ 多档 fallback：bandit 失败回退固定 λ；生成式 PRM 失败回退判别式；PRM 整体失败回退 frozen-VisualPRM；MCTS 失败回退 PRM+BoN |
+| 时间可行性（12 个月） | ⚠️ 紧，需要分阶段截止 |
+| 失败时的 fallback | ✅ 多档 fallback：生成式 PRM 失败回退判别式；PRM 整体失败回退 frozen-VisualPRM；MCTS 失败回退 PRM+BoN |
 | 主要风险 | ⚠️ 被 categorize 为 "GroundedPRM 的 RAG 版本"——通过写作克制（正常引用不反复划界）+ 方法本身的 state-modifying 差异自然体现来缓解 |
 
 ---
@@ -774,17 +658,17 @@ $$
 
 **B.4 Information-Diversity UCB 的更一般形式**：modality coverage 只是 information axis 多样性的一个特例。我们在 v1.0 只做 modality version，因为它最容易讲清楚和实验验证。更一般的 information-diversity UCB（覆盖 entity 多样性、attribute 多样性、tool 多样性）作为 future work。
 
-**B.5 更激进的 Self-Evolution（v1.1 新增）**：
+**B.5 Self-Evolution 作为 future work（v1.4 重写）**：
 
-v1.1 的 self-adjusting bandit 是 **inference-time、search-policy-level、within-query** 的轻量自适应机制。它**故意**避开了 self-evolution 文献中更激进的几个方向，这些方向作为 future work：
+v1.1–v1.3 曾用一个 inference-time 的 self-adjusting bandit 体现"轻量自我调整"，v1.4 已移除（稀释 PRM、消融负担重、$P=10$ 难收敛）。"自我进化"方向**保留为 future work，但落点改到训练时**——比推理时调一个标量 λ 更有 substance 的，是一个 **ReST / STaR 式的自举闭环**：用当前 PRM 引导 MCTS 跑 rollout → outcome 验证挑成功轨迹 → tree-level credit 重新打标 → 重训得到更强 PRM，证明跨轮单调提升。它不与 PRM 抢戏，而正是"让 PRM 自己变强"。
 
-| 维度 | v1.1 的设计 | 更激进的 future work |
-|------|------------|--------------------|
-| 调整对象 | 单一标量参数 λ | PRM 参数本身 / 整个 selection 网络 |
-| 调整时机 | 推理时 | 训练-推理交错持续学习 |
-| 调整范围 | 单 query 内独立 | 跨 query 持续累积经验 |
-| 学习信号 | PRM 预测 reward + median 阈值 | 真实 outcome（如何获取？开放问题） |
-| 评估范式 | 标准 frozen-model | online learning（评估协议需要重新设计）|
+| 维度 | 本项目 v1（主线） | self-evolution future work |
+|------|------------------|---------------------------|
+| 调整对象 | PRM 一次性训练后 frozen | PRM 参数随轮次自举更新 |
+| 调整时机 | 训练后固定 | 训练-推理交错（多轮） |
+| 学习信号 | 数据集固定标签 | 自生成轨迹 + outcome 验证重标 |
+| 评估范式 | 标准 frozen-model | 需设计防 collapse 的多轮评估协议 |
+| 前置验证 | — | 先在 1K 子集验"第 2 轮 > 第 1 轮"，过了再放量 |
 
 为什么不在 v1.0/v1.1 做：
 - **跨 query 持续学习**会破坏 ICLR 的 frozen-model 评估范式。审稿人会立刻质疑评估公平性
@@ -879,26 +763,13 @@ v1.1 的 self-adjusting bandit 是 **inference-time、search-policy-level、with
 |------|------|
 | $N(s)$ | 节点 $s$ 的访问次数 |
 | $N(s,a)$ | 边 $(s,a)$ 的访问次数 |
-| $c$ | exploration 常数 |
-| $\nu(a,\pi)$ | 动作 $a$ 相对路径 $\pi$ 的 modality novelty |
-| $\mathcal{M}(\pi), \mathcal{G}(\pi)$ | 路径上已出现的模态集合、粒度集合 |
-| $w_{\text{mod}}, w_{\text{gran}}$ | 新模态/新粒度的奖励权重 |
+| $c$ | UCB1 exploration 常数 |
 
-**Self-Adjusting Bandit 相关**：
+**搜索其它符号**：
 
 | 符号 | 含义 |
 |------|------|
 | $P$ | 单 query rollout 预算（默认 10） |
-| $\mathcal{A}=\{\lambda_1,...,\lambda_K\}$ | $K=5$ 个候选 λ 值 |
-| $t$ | rollout 序号 |
-| $\lambda^{(t)}$ | 第 $t$ 次 rollout 选用的 λ |
-| $r^{(t)}$ | 第 $t$ 次 rollout 的 reward |
-| $(\alpha_k^{(t)}, \beta_k^{(t)})$ | arm $k$ 的 Beta 后验参数 |
-| $\theta_k^{(t)}$ | 从 arm $k$ 后验采样的值 |
-| $m^{(t)}$ | 动态 median 阈值 |
-| $z^{(t)}$ | 二值化成功信号 |
-| $\sigma(t)$ | warm-up 阶段的轮询顺序 |
-| $\tau_{\text{stop}}$ | 早停阈值 |
-| $\lambda^*_q, \hat{\lambda}_q$ | query $q$ 的 oracle 最优 λ、bandit 收敛 λ |
+| $\tau_{\text{stop}}$ | 早停阈值（best rollout reward 超过即停） |
 
-**注**：注意 $\tau$（trajectory）与 $\tau_{\text{stop}}$（早停阈值）的区别——论文撰写时若担心混淆，可把早停阈值改用其他符号（如 $\eta$）。这类符号冲突检查应在 method section 定稿时统一过一遍。
+**注**：$\tau$（trajectory）与 $\tau_{\text{stop}}$（早停阈值）符号相近，论文定稿时可把早停阈值改用 $\eta$ 避免混淆。

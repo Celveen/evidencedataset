@@ -1,8 +1,7 @@
 """EvidenceTree inference: MCTS over retrieval actions, PRM-guided.
 
-Runs the full search loop (Stage 5 fixed lambda / Stage 6 bandit via
-``bandit.enabled``) on a benchmark and reports EM plus search-behavior stats
-(action-type usage, rollouts, lambda choices).
+Runs the MCTS search loop (UCB1 over the PRM's Q) on a benchmark and reports EM
+plus search-behavior stats (action-type usage, rollouts).
 
 Scorer selection (``prm.scorer``):
     overlap    — heuristic evidence-overlap scorer (offline debug; mock default)
@@ -10,8 +9,7 @@ Scorer selection (``prm.scorer``):
 
 Usage:
     python scripts/run_inference.py --config configs/mcts.yaml --mock
-    python scripts/run_inference.py --config configs/mcts.yaml \
-        --set bandit.enabled=true --n 50
+    python scripts/run_inference.py --config configs/mcts.yaml --n 50
 """
 
 from __future__ import annotations
@@ -115,10 +113,6 @@ def run(cfg: dict[str, Any], mock: bool) -> dict[str, Any]:
                 "outcome": em,
                 "best_reward": result.best_reward,
                 "rollouts": result.rollouts_run,
-                "lambdas": [r.lam for r in result.rollout_log],
-                "converged_lambda": (
-                    result.bandit.converged_lambda() if result.bandit else None
-                ),
                 "best_path": [
                     a.describe() for a in result.best_state.actions_taken
                 ],
@@ -135,12 +129,6 @@ def run(cfg: dict[str, Any], mock: bool) -> dict[str, Any]:
         "mean_rollouts": sum(r["rollouts"] for r in records) / n if n else 0.0,
         "mean_best_reward": sum(r["best_reward"] for r in records) / n if n else 0.0,
         "action_usage": dict(action_usage),
-        "bandit_enabled": bool(
-            cfg.get("bandit", {}).get("enabled", False)
-        ),
-        "converged_lambdas": Counter(
-            str(r["converged_lambda"]) for r in records if r["converged_lambda"]
-        ),
     }
     return {"summary": summary, "records": records}
 
@@ -150,8 +138,6 @@ def write_report(result: dict[str, Any], cfg: dict[str, Any], mock: bool) -> Pat
     report_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     tag = "mock" if mock else "real"
-    if cfg.get("bandit", {}).get("enabled", False):
-        tag += "_bandit"
     base = report_dir / f"inference_{tag}_{ts}"
     payload = {
         "mode": tag,
@@ -174,7 +160,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--n", type=int, default=None, help="Override n_queries.")
     p.add_argument(
         "--set", dest="overrides", action="append", default=[],
-        help="Override config, e.g. --set bandit.enabled=true (repeatable).",
+        help="Override config, e.g. --set search.rollouts=20 (repeatable).",
     )
     return p.parse_args(argv)
 
@@ -196,8 +182,6 @@ def main(argv=None) -> int:
         "accuracy=%.3f | mean_rollouts=%.1f | action_usage=%s",
         s["accuracy"], s["mean_rollouts"], s["action_usage"],
     )
-    if s["bandit_enabled"]:
-        log.info("converged lambdas: %s", dict(s["converged_lambdas"]))
     log.info("Report written: %s.json", base)
     return 0
 

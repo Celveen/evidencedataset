@@ -78,45 +78,9 @@ def test_state_to_trajectory_roundtrip():
     assert search_steps and all(s.observation for s in search_steps)
 
 
-def test_bandit_integration():
-    cfg = SearchConfig(rollouts=8, early_stop_q=2.0, adaptive_lambda=True, seed=0)
-    queries, searcher = make_searcher(cfg)
-    result = searcher.search(queries[3].question)
-    assert result.bandit is not None
-    lams = [r.lam for r in result.rollout_log]
-    assert lams[:3] == [0.1, 0.5, 1.0]  # warm-up round-robin
-    assert all(l in cfg.bandit_arms for l in lams)
-    assert len(result.bandit.history) == result.rollouts_run
-    assert result.bandit.converged_lambda() in cfg.bandit_arms
-
-
-def test_bandit_state_fresh_per_query():
-    cfg = SearchConfig(rollouts=4, early_stop_q=2.0, adaptive_lambda=True, seed=0)
-    queries, searcher = make_searcher(cfg)
-    r1 = searcher.search(queries[0].question)
-    r2 = searcher.search(queries[1].question)
-    assert r1.bandit is not r2.bandit
-    assert len(r2.bandit.history) == r2.rollouts_run  # not carried over
-
-
-def test_fixed_lambda_runs_without_bandit():
-    cfg = SearchConfig(rollouts=4, adaptive_lambda=False, lam=0.3, early_stop_q=2.0)
-    queries, searcher = make_searcher(cfg)
-    result = searcher.search(queries[4].question)
-    assert result.bandit is None
-    assert all(r.lam == pytest.approx(0.3) for r in result.rollout_log)
-
-
 def test_search_config_from_dict():
     cfg = SearchConfig.from_dict(
-        {
-            "search": {"rollouts": 5, "max_depth": 2, "lam": 0.7, "seed": 3},
-            "uct": {"w_mod": 2.0, "w_gran": 0.25},
-            "bandit": {"enabled": True, "arms": [0.1, 0.5], "warmup": 2},
-        }
+        {"search": {"rollouts": 5, "max_depth": 2, "c_uct": 1.5, "seed": 3}}
     )
     assert cfg.rollouts == 5 and cfg.max_depth == 2
-    assert cfg.lam == pytest.approx(0.7)
-    assert cfg.w_mod == pytest.approx(2.0) and cfg.w_gran == pytest.approx(0.25)
-    assert cfg.adaptive_lambda is True
-    assert cfg.bandit_arms == (0.1, 0.5) and cfg.bandit_warmup == 2
+    assert cfg.c_uct == pytest.approx(1.5) and cfg.seed == 3

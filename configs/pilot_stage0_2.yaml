@@ -1,0 +1,56 @@
+# Stage 0.2 — MCTS vs Best-of-N gap (go/no-go pilot for Contribution 2).
+# Run: python pilot/stage0_2_mcts_vs_bon.py --config configs/pilot_stage0_2.yaml [--mock]
+#
+# Question: does tree search (UCT + tree-shared statistics) beat independent
+# Best-of-N sampling at a COMPARABLE PRM-call budget, using a *frozen* VisualPRM?
+# Both methods share the same proposer / executor / PRM / max_depth — the only
+# difference is the search structure.
+
+n_queries: 200                   # report suggests a few hundred; mock caps at ~100
+
+# Best-of-N baseline
+bon:
+  n_samples: 8                   # N independent stochastic trajectories per query
+  seed: 0
+
+# MCTS (mirrors configs/mcts.yaml; PRM-guided UCB1, no bandit/lambda)
+search:
+  rollouts: 10                   # P
+  max_depth: 3
+  top_k_children: 3
+  c_uct: 1.0                      # UCB1 exploration constant
+  early_stop_q: 0.9
+  seed: 0
+
+data:
+  benchmark: infoseek
+  data_dir: data/corpus/infoseek
+  seed: 0
+
+retriever:
+  type: bm25
+  top_k: 5
+
+generation:                      # proposer policy / answer-drafting backend
+  backend: mock                  # mock | hf | api  (real run: hf or api)
+  model: Qwen/Qwen2.5-VL-7B-Instruct
+  provider: anthropic
+  max_new_tokens: 32
+  temperature: 0.7               # >0 so Best-of-N samples actually differ
+  mock_accuracy: 0.6
+  mock_seed: 0
+
+prm:                             # frozen VisualPRM-8B (real) / offline scorer (mock)
+  scorer: null                   # null -> overlap in mock, visualprm in real
+  model_name: OpenGVLab/VisualPRM-8B
+  device: null
+
+outcome:
+  metric: exact_match            # exact_match | f1
+
+output:
+  report_dir: data/pilot_reports
+
+# Go/no-go: how much MCTS must beat BoN (absolute accuracy) to justify the tree.
+thresholds:
+  mcts_wins_margin: 0.03         # acc_mcts - acc_bon >= this -> MCTS adds value

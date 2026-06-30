@@ -3,9 +3,9 @@
 # On macOS these install as CPU/MPS builds — fine for development, too slow for 8B.
 -r base.txt
 torch>=2.1
-transformers>=4.44
+transformers>=4.44,<5        # 5.x requires torch>=2.4; pin <5 to match torch 2.2 (CPU/MPS dev)
 accelerate>=0.30
-sentence-transformers>=2.7   # dense retriever (Stage 1+)
+sentence-transformers>=2.7   # dense retriever / CLIP image_search (Stage 1+)
 faiss-cpu>=1.7               # vector index (Stage 1+); use faiss-gpu on the server
 einops>=0.7
 pillow>=10.0                 # image handling for multimodal inputs

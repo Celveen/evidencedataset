@@ -1,13 +1,14 @@
 """Main MCTS loop: selection -> expansion -> simulation -> backup.
 
-Stage 5 (fixed lambda) and Stage 6 (bandit-adaptive lambda) in one searcher —
-``SearchConfig.adaptive_lambda`` flips between them. The PRM is a pluggable
-``TrajectoryScorer`` (today: mock / frozen VisualPRM; later: EvidenceTree-PRM
-in score-only mode), so the framework runs before any PRM is trained.
+Retrieval-action MCTS guided by a pluggable ``TrajectoryScorer`` (today: mock /
+frozen VisualPRM; later: EvidenceTree-PRM in score-only mode), so the framework
+runs before any PRM is trained. Selection is standard UCB1 over the PRM's Q —
+there is no bandit and no modality-coverage lambda term (both removed; the PRM's
+Q is the single quality signal).
 
-Defaults follow the implementation report: P=10 rollouts, max_depth=3,
-expansion keeps the top-k PRM-ranked candidates, early stop when a rollout's
-reward exceeds ``early_stop_q`` (tau_stop).
+Defaults follow the implementation report: P=10 rollouts, max_depth=3, expansion
+keeps the top-k PRM-ranked candidates, early stop when a rollout's reward exceeds
+``early_stop_q`` (tau_stop).
 """
 
 from __future__ import annotations
@@ -17,10 +18,9 @@ from typing import Any, Protocol
 
 from evidencetree.actions.action_space import SearchState
 from evidencetree.actions.executor import ActionExecutor
-from evidencetree.mcts.bandit import ThompsonBandit
 from evidencetree.mcts.node import MCTSNode
 from evidencetree.mcts.proposer import ActionProposer
-from evidencetree.mcts.uct import modality_novelty, uct_score
+from evidencetree.mcts.uct import uct_score
 from evidencetree.prm.model import Trajectory, TrajectoryStep
 
 
@@ -39,13 +39,7 @@ class SearchConfig:
     max_depth: int = 3
     top_k_children: int = 3
     c_uct: float = 1.0
-    lam: float = 0.3              # fixed lambda (ignored when adaptive_lambda)
-    w_mod: float = 1.0
-    w_gran: float = 0.5
     early_stop_q: float = 0.9     # tau_stop
-    adaptive_lambda: bool = False  # Stage 6 bandit on/off
-    bandit_arms: tuple[float, ...] = ThompsonBandit.DEFAULT_ARMS
-    bandit_warmup: int = 3
     seed: int = 0
 
     @classmethod
@@ -53,29 +47,17 @@ class SearchConfig:
         """Build from a configs/mcts.yaml-style nested dict."""
         d = dict(d or {})
         search = dict(d.get("search", {}))
-        uct = dict(d.get("uct", {}))
-        bandit = dict(d.get("bandit", {}))
         kwargs: dict[str, Any] = {}
-        for key in ("rollouts", "max_depth", "top_k_children", "c_uct", "lam",
+        for key in ("rollouts", "max_depth", "top_k_children", "c_uct",
                     "early_stop_q", "seed"):
             if key in search:
                 kwargs[key] = search[key]
-        for key in ("w_mod", "w_gran"):
-            if key in uct:
-                kwargs[key] = uct[key]
-        if "enabled" in bandit:
-            kwargs["adaptive_lambda"] = bool(bandit["enabled"])
-        if "arms" in bandit:
-            kwargs["bandit_arms"] = tuple(float(a) for a in bandit["arms"])
-        if "warmup" in bandit:
-            kwargs["bandit_warmup"] = int(bandit["warmup"])
         return cls(**kwargs)
 
 
 @dataclass
 class RolloutRecord:
     t: int
-    lam: float
     reward: float
     answer: str | None
     depth: int
@@ -91,7 +73,6 @@ class SearchResult:
     rollouts_run: int
     rollout_log: list[RolloutRecord] = field(default_factory=list)
     root: MCTSNode | None = None
-    bandit: ThompsonBandit | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -151,34 +132,20 @@ class MCTSSearcher:
 
     # ------------------------------------------------------------------ #
     def search(self, question: str, image_path: str | None = None) -> SearchResult:
-        """Run P rollouts for one query; return the best-scored answer.
-
-        A fresh bandit is created per call — per-query independence is
-        structural, not a convention to remember.
-        """
+        """Run P rollouts for one query; return the best-scored answer."""
         cfg = self.cfg
         root = MCTSNode(SearchState(question=question, image_path=image_path))
-        bandit = (
-            ThompsonBandit(
-                arms=cfg.bandit_arms, warmup=cfg.bandit_warmup, seed=cfg.seed
-            )
-            if cfg.adaptive_lambda
-            else None
-        )
 
         best_state: SearchState | None = None
         best_reward = float("-inf")
         log: list[RolloutRecord] = []
 
         for t in range(cfg.rollouts):
-            lam = bandit.select() if bandit else cfg.lam
-            self._emit(event="rollout_start", t=t, lam=lam)
-            terminal_state, reward = self._rollout(root, lam)
-            if bandit:
-                bandit.update(reward)
+            self._emit(event="rollout_start", t=t)
+            terminal_state, reward = self._rollout(root)
             log.append(
                 RolloutRecord(
-                    t=t, lam=lam, reward=reward,
+                    t=t, reward=reward,
                     answer=terminal_state.final_answer,
                     depth=terminal_state.depth,
                     state=terminal_state,
@@ -197,47 +164,42 @@ class MCTSSearcher:
             rollouts_run=len(log),
             rollout_log=log,
             root=root,
-            bandit=bandit,
         )
 
     # ------------------------------------------------------------------ #
     # One rollout = selection -> expansion -> simulation -> backup
     # ------------------------------------------------------------------ #
-    def _rollout(self, root: MCTSNode, lam: float) -> tuple[SearchState, float]:
-        node = self._select(root, lam)
+    def _rollout(self, root: MCTSNode) -> tuple[SearchState, float]:
+        node = self._select(root)
         if not node.is_terminal and node.depth < self.cfg.max_depth:
             self._expand(node)
             if node.children:
-                node = self._best_child(node, lam)
+                node = self._best_child(node)
         terminal_state, reward = self._simulate(node.state)
         self._backup(node, reward)
         return terminal_state, reward
 
-    def _select(self, root: MCTSNode, lam: float) -> MCTSNode:
+    def _select(self, root: MCTSNode) -> MCTSNode:
         node = root
         while node.is_expanded and not node.is_terminal:
-            node = self._best_child(node, lam)
+            node = self._best_child(node)
         return node
 
-    def _best_child(self, node: MCTSNode, lam: float) -> MCTSNode:
-        path = node.path_actions()
+    def _best_child(self, node: MCTSNode) -> MCTSNode:
         scored = []
         for ch in node.children:
-            nov = modality_novelty(
-                ch.action, path, w_mod=self.cfg.w_mod, w_gran=self.cfg.w_gran
-            )
             u = uct_score(
-                q_value=ch.q_value, visits=ch.visits, parent_visits=node.visits,
-                novelty=nov, c=self.cfg.c_uct, lam=lam,
+                q_value=ch.q_value, visits=ch.visits,
+                parent_visits=node.visits, c=self.cfg.c_uct,
             )
-            scored.append((u, nov, ch))
-        best = max(scored, key=lambda x: x[0])[2]
+            scored.append((u, ch))
+        best = max(scored, key=lambda x: x[0])[1]
         self._emit(
             event="select",
             candidates=[
                 {"action": ch.action.describe(), "uct": u, "q": ch.q_value,
-                 "visits": ch.visits, "novelty": nov, "prior": ch.prior}
-                for u, nov, ch in scored
+                 "visits": ch.visits, "prior": ch.prior}
+                for u, ch in scored
             ],
             chosen=best.action.describe(),
         )

@@ -34,3 +34,29 @@ def test_aggregate():
     out = metrics.aggregate(preds, refs)
     assert out["n"] == 2.0
     assert out["exact_match"] == 0.5
+
+
+# --- InfoSeek relaxed accuracy (numeric range + string) --------------------- #
+_NUMERIC_GOLD = ["{'wikidata': 153.0, 'range': [137.7, 168.3]}"]  # gold as str-repr
+
+
+def test_infoseek_numeric_in_range_scores_one():
+    # A correct number inside the range; bare EM would (wrongly) give 0.
+    assert metrics.infoseek_accuracy("about 150 grams", _NUMERIC_GOLD) == 1.0
+    assert metrics.exact_match("about 150 grams", _NUMERIC_GOLD) == 0.0
+
+
+def test_infoseek_numeric_out_of_range_scores_zero():
+    assert metrics.infoseek_accuracy("45 kg", _NUMERIC_GOLD) == 0.0
+    assert metrics.infoseek_accuracy("no number here", _NUMERIC_GOLD) == 0.0
+
+
+def test_infoseek_numeric_handles_commas_and_dict_gold():
+    assert metrics.infoseek_accuracy("145,000", ["{'range': [144000, 146000]}"]) == 1.0
+    # raw dict gold (not str-repr) also works
+    assert metrics.infoseek_accuracy("160", [{"wikidata": 153.0, "range": [137.7, 168.3]}]) == 1.0
+
+
+def test_infoseek_string_falls_back_to_exact_match():
+    assert metrics.infoseek_accuracy("Aare", ["Lutschine", "Aare", "Aar"]) == 1.0
+    assert metrics.infoseek_accuracy("Paris", ["Aare"]) == 0.0

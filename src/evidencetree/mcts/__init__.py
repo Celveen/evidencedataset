@@ -1,7 +1,8 @@
-"""MCTS search: tree node, UCT selection, bandit, proposers, search loop
-(Stage 5 fixed lambda + Stage 6 bandit, runnable now with a mock/frozen PRM)."""
+"""MCTS search: tree node, UCT selection, proposers, search loop.
 
-from .bandit import ThompsonBandit
+Runnable now with a mock / frozen PRM scorer. Selection is plain UCB1 over the
+PRM's Q — no bandit and no modality-coverage lambda term (both removed)."""
+
 from .node import MCTSNode
 from .proposer import ActionProposer, HeuristicProposer, LLMProposer
 from .search import (
@@ -11,7 +12,7 @@ from .search import (
     SearchResult,
     state_to_trajectory,
 )
-from .uct import modality_novelty, uct_score
+from .uct import uct_score
 
 __all__ = [
     "ActionProposer",
@@ -22,8 +23,6 @@ __all__ = [
     "RolloutRecord",
     "SearchConfig",
     "SearchResult",
-    "ThompsonBandit",
-    "modality_novelty",
     "state_to_trajectory",
     "uct_score",
 ]
