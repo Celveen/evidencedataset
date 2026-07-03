@@ -1,6 +1,6 @@
 # EvidenceTree: Process-Rewarded MCTS for Open-Domain Multimodal RAG
 
-## 项目实现报告 v1.3
+## 项目实现报告 v1.5
 
 > **本报告是经过多轮批判性讨论后形成的最终设计文档。**
 > 它整合了对 RCTS（ICML 2025）、AR-MCTS（ACL 2025）、GroundedPRM（arXiv 2510.14942）、VisualPRM、MMSearch-R1 等近期工作的批判性分析，
@@ -34,6 +34,14 @@
 > 2. **移除 Modality-Coverage UCB 的 novelty 项**（删除原 §3.3 的 $\lambda\cdot\nu(a,\pi)$ bonus 与 §4.5 A2 消融）。理由：当动作空间收敛为 `{text_search, image_search, answer}`（见 §3.1）后，可"覆盖"的模态/粒度很少，该 bonus 既无用武之地又引入 $\lambda, w_{mod}, w_{gran}$ 三个待调超参。Selection 回归**纯 UCB1**（$Q + c\sqrt{\ln N/n}$），让 PRM 的 $Q$ 成为唯一质量信号。
 > 3. **Contribution 2 重定位**：从"Self-Adjusting Modality-Coverage UCB"改为"Retrieval-Action MCTS（PRM 引导的标准 UCB1 树搜索）"，多模态能力由 `image_search` 的**实体消歧**作用承载（图 query 命中实体页 → 再 text_search 查属性），而非靠 UCB 的探索偏好。
 > 4. **代码同步**：删除 `mcts/bandit.py`、`uct.py` 的 `modality_novelty`、`SearchConfig` 的 `lam/w_mod/w_gran/adaptive_lambda/bandit_*`；73→59 测试全过。
+
+> **v1.5 相对 v1.4 的修订（首次真实轨迹驱动，2026-07）**：
+> 0. **背景**：DatasetConstruct 首次真实小规模试跑（5 query × 3 数据集：InfoSeek / ScienceQA / GQA）的轨迹人工审查暴露两类标签污染：(a) InfoSeek 上"答案判对但证据不支撑"（参数化蒙对）的 answer 步拿满分 outcome 标签；(b) 成功轨迹上的冗余检索步（问题已解决仍继续搜，检索结果同实体故 grounding 不低）拿"双高"标签。
+> 1. **Answer-support 门控**（修 (a)，详见 §3.2）：answer 步 score 从 outcome-only 改为 $R_{\text{outcome}} \cdot (\gamma + (1-\gamma)\cdot \text{supp})$，$\gamma=0.3$。supp = 答案是否被已积累证据支撑：API judge 三档（SUPPORTED/PARTIAL/UNSUPPORTED → 1/0.5/0，temperature 0；三档而非连续值是因为 LLM 直接输出连续分数不可校准——粗而可靠优于细而失准，后续可升级为类别 token logprob 加权得到真连续值）或离线 lexical（答案内容词+数字覆盖率，数字不匹配一票否决）；判不了返回 null → 退化 outcome-only，绝不注入编造值；空 bundle → 0。保序：答错(0) < 答对无支撑(≈γ) < 答对有支撑(≈1)。`unsupported_correct` 样本**不丢弃**——留作 Stage 4.2"同状态 DPO 对"的现成负样本。
+> 2. **Rationale QC 扩展**（防 GT 泄漏与 (rationale, score) 自相矛盾）：新增 (d) GT 泄漏检查——禁评测措辞（"ground truth"/"标准答案"等）、禁"可见证据/问题/动作输入之外"的 gold answer 字符串（**从证据引用答案合法，凭空知道即泄漏**）；(e) rationale 末尾必须带 `VERDICT: good|mixed|poor`，与 score 方向硬矛盾（≥0.6 配 poor、≤0.4 配 good）即拦截重生成；VERDICT 剥离存 `rationale_verdict`。生成 prompt 同步加 ex-ante 禁令（借鉴 DBAgent／Learning to Search, arXiv 2604.07146 judge prompt 的 trajectory-realism 规则）。
+> 3. **冗余检索步（over-search）治理暂缓**（(b)）：候选方案为边际增益折扣 $g' = g\cdot(1-\max\cos(\text{新证据}, \text{已有 bundle}))$ + "answer-now vs 多搜一步"DPO 对；因一刀切折扣会误伤**多源佐证**（对抗污染语料恰恰依赖佐证，见 §4.3），先以 `marginal_gain` 独立字段记录不动 score，待 100–1000 条真实分布确认"冗余 vs 佐证"可分后再决策融合。
+> 4. **文档收口**：删除《EvidenceTree_实现报告_for_ClaudeCode.md》（其 Stage 6 bandit、modality bonus 阶段规范与 v1.4 冲突，双文档漂移），实现规范以本报告 + 代码库现状为准；本文件更名去掉文件名中的过期版本号。
+> 5. **代码同步**：`prm/verifiers.py::AnswerSupportVerifier`、`prm/data_gen.py::fuse_answer_score`、`prm/rationale_gen.py` verdict/泄漏 QC、`DatasetConstruct` config/SCHEMA/validator 同步；测试 63→72 全过，mock 四步 pipeline + validator 零违规。
 
 ---
 
@@ -235,7 +243,7 @@ policy prompt 约束，grounding 该回答的问题是"这步检索到底有没�
 | 文本结果 | `cos(CLIP_text(question), CLIP_text(result))` |
 | 图像结果 | `cos(CLIP_text(question), CLIP_image(result))` |
 | 一步多个/多模态结果 | 各结果分别打分后取 **max**（这一步的 grounding ≙ 它最相关的那条结果） |
-| `answer` | 不参与 local，由 outcome 决定 |
+| `answer` | 不参与 local；由 **outcome × support 门控**决定（v1.5，见本节末） |
 
 **为什么用统一 CLIP 空间**：文本结果与图像结果都用**同一个 CLIP 模型**、对齐到**同一个
 `CLIP_text(question)` 锚点**。若文本用 sentence-transformer、图像用 CLIP，两者余弦尺度不同，
@@ -265,7 +273,17 @@ $$R_{\text{outcome}}(s, a) = \frac{1}{|\mathcal{T}(s,a)|} \sum_{\tau \in \mathca
 
 对开放生成式答案，$\mathbb{1}[\cdot \approx y^*]$ 使用 LLM judge ensemble（多个 judge model 投票，降低单一 judge 的偏差）。
 
-**默认 α=0.5**，sensitivity ablation 给三档 (0.2 / 0.5 / 0.8)。
+**Answer 步的 support 门控（v1.5 新增）**：
+
+outcome 单独决定 answer 步标签，会把"答案判对但证据不支撑"（参数化蒙对，首次真实试跑中在 InfoSeek 上实际观测到）打成满分——PRM 由此学到"无证据也可以直接 answer"，这正是 outcome-only 方法的过程幻觉问题在**标签层**的复现。v1.5 起 answer 步的标签为：
+
+$$R_{\text{answer}}(s) = R_{\text{outcome}}(s, a_{\text{ans}}) \cdot \big(\gamma + (1-\gamma)\cdot \text{supp}(y, \mathcal{E}_s)\big), \qquad \gamma = 0.3$$
+
+其中 $\text{supp}(y, \mathcal{E}_s) \in [0,1]$ 度量答案 $y$ 是否被状态 $s$ 已积累的证据 bundle $\mathcal{E}_s$ 支撑（API judge 三档或离线 lexical；判不了 = null 时退化为 outcome-only；空 bundle → 0）。
+
+**为什么是"乘法 + 下限"而不是纯乘法或加权和**：outcome 必须做乘法门控——答错是最干净的负信号，不能被 support 抬起（加权和会给"答错但碰上假证据"的样本 0.5 分）；下限 $\gamma$ 保住排序 **答错(0) < 答对无支撑(≈γ) < 答对有支撑(≈1)**——纯乘法会把"蒙对"压成 0、与答错无法区分，且对 support verifier 的漏判噪声过脆（转述未命中会把证据扎实的正确答案误杀成硬负样本）。
+
+**默认 α=0.5**，sensitivity ablation 给三档 (0.2 / 0.5 / 0.8)。support 门控的 $\gamma$ 默认 0.3，可做 sensitivity 检查。
 
 ### 3.3 UCB1 Selection
 
@@ -391,14 +409,15 @@ parameters: crop(0.2, 0.3, 0.5, 0.6)
 
 生成式 PRM 训练要求每个样本有 (rationale, score) 对。score 由上述 grounding + outcome 计算得到，但 rationale 需要额外生成。我们的方案：
 
-- **生成方式**：用一个强 LLM（如 Claude / GPT-4o）看每个 (state, action, score) 三元组，生成对应的 rationale 文本
+- **生成方式**：用一个强 LLM（如 Claude / GPT-4o / DeepSeek）看每个 (state, action, score) 三元组，生成对应的 rationale 文本
 - **成本估算**：约 50–80K 样本，每个生成一段 rationale，总成本约 $800
-- **质量过滤规则**：rationale 必须满足 (a) 至少引用一个 evidence_id，(b) 明确提到动作类型，(c) 长度在 50–150 token 之间。约 15% 不合格的会重新生成
+- **质量过滤规则（v1.5 扩展至五条）**：rationale 必须满足 (a) 至少引用一个**本样本可见**的 evidence_id，(b) 明确提到动作类型，(c) 长度在 30–150 token 之间，(d) **无 GT 泄漏**——不含评测措辞（"ground truth"/"标准答案"等），不含可见证据/问题/动作输入之外的 gold answer 字符串（从证据引用答案合法，凭空知道即泄漏；泄漏样本会教 PRM 以"我知道正确答案"的姿态推理，而推理时它没有这个信息，train/inference 分布错位），(e) 末尾带 `VERDICT: good|mixed|poor` 且与 score 方向无硬矛盾（score≥0.6 不得 poor、≤0.4 不得 good——防止 (rationale, score) 自相矛盾的训练对教出"说一套打一套"的 PRM）。不合格的重新生成（至多 3 次）
 - **关键说明**：这个 API 调用**仅用于生成 rationale label，不用于检索**。检索全程在 benchmark 自带语料上离线进行。因此这不破坏实验可复现性——rationale 一旦生成就是固定数据集，可随数据集一起发布
 
 **质量控制**：
 - 拒绝过短轨迹（<2 步）和过长轨迹（>8 步）
 - 拒绝 grounding 与 outcome 严重不一致的轨迹（可能是 noisy label）
+- "答对但证据不支撑"的 answer 样本**不丢弃**：由 support 门控压低分数并标记 `unsupported_correct`，留作 Stage 4.2 同状态 DPO 对的负样本（v1.5）
 - 人工抽样 500 条做 score label sanity check
 - 人工抽样 200 条（每类动作类型）做 rationale 质量 check；若 rationale 质量低于阈值，升级到更强的生成模型或人工标注
 
@@ -549,6 +568,7 @@ self-adjusting bandit 已删除，故其全套消融（A6.1 主对比 / A6.2 con
 - 使用多个 verifier ensemble（cross-encoder + LLM judge）
 - 对 verifier 本身做 calibration check（在人工标注集上验证）
 - 报告 verifier accuracy 作为系统的一个 dependency
+- v1.5 新增的 answer-support judge 同属此依赖：其三档判定（SUPPORTED/PARTIAL/UNSUPPORTED）应在 Stage 0.3 的人工一致性检查中一并校验；三分类的 agreement 也比连续分数更易度量
 
 **风险 6：Open-ended answer 的 outcome 评估不可靠**
 

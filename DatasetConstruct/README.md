@@ -52,7 +52,7 @@ image 子索引为空 → 该动作执行但返回 []），且需要 **query 图
 > 早期版本曾把检索动作按 (query 模态 × 结果模态) 拆成 2×2 四个
 > （`text_search` / `text_to_image` / `image_to_text` / `image_search`），后收口为按
 > query 模态切分的两个搜索动作 —— 结果模态由检索器在统一语料里按相关度自然决定，不再
-> 硬编码进动作类型。详见根目录 `EvidenceTree_项目实现报告_v1.3.md` §3.1。
+> 硬编码进动作类型。详见根目录 `EvidenceTree_项目实现报告.md` §3.1。
 
 ## 看清轨迹：inspector 与 trace
 

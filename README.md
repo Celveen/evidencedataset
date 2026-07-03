@@ -1,15 +1,15 @@
 # EvidenceTree
 
-多模态 RAG 系统：在**检索动作空间**上做 MCTS 搜索，由一个 **grounded PRM** 给每个检索
-动作打分引导搜索，并在推理时用 **Thompson Sampling bandit** 自适应调整探索强度 λ。
+多模态 RAG 系统：在**检索动作空间**上做 MCTS 搜索（标准 UCB1），由一个 **grounded PRM**
+给每个检索动作打分引导搜索——PRM 的 Q 是唯一质量信号。
 
-> 实现规范见 [`EvidenceTree_实现报告_for_ClaudeCode.md`](EvidenceTree_实现报告_for_ClaudeCode.md)。
+> 设计与实现规范见 [`EvidenceTree_项目实现报告.md`](EvidenceTree_项目实现报告.md)（当前 v1.5）。
 > **核心纪律：每个阶段必须独立跑通并验证后，才进入下一阶段。**
 
 ## 数据流
 
 - **训练线**：benchmark 自带语料 → weak policy 跑 rollout → step 打标 → 训练 PRM
-- **推理线**：用户 query → MCTS（PRM 引导 + bandit 调 λ）→ 输出最优答案
+- **推理线**：用户 query → MCTS（PRM 引导的 UCB1）→ 输出最优答案
 
 ## 快速开始
 
