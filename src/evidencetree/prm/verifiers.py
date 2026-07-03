@@ -27,6 +27,14 @@ best relevance is taken. ``answer`` -> None (outcome decides).
 A ``clip_scorer=None`` verifier (mock / offline tests) falls back to lexical
 question-word recall for text results and a neutral 0.5 for image results, so
 the pipeline runs without any model download.
+
+ANSWER SUPPORT (``AnswerSupportVerifier``): grounding never scores the answer
+step, but outcome alone mislabels the "correct answer with no evidence support"
+failure mode (parametric lucky guess) as a perfect action. The support verifier
+checks whether the answer text is actually backed by the accumulated evidence
+bundle: ``lexical`` (offline) matches answer content words/numbers against the
+evidence, ``api`` asks an LLM judge (handles paraphrase and yes/no/absence
+answers). Returns None when it cannot judge (e.g. lexical on a bare yes/no).
 """
 
 from __future__ import annotations
@@ -148,6 +156,104 @@ class ClipGroundingScorer:
         from PIL import Image
 
         return Image.open(path).convert("RGB")
+
+
+# --------------------------------------------------------------------------- #
+# Answer support verifier (answer step: is the answer backed by the evidence?)
+# --------------------------------------------------------------------------- #
+
+# Answers a lexical matcher cannot meaningfully verify against evidence text
+# (absence/boolean answers need entailment, not containment).
+_UNVERIFIABLE_ANSWERS = {"yes", "no", "none", "true", "false", "unknown", "n/a"}
+
+_NUM_TOKEN_RE = re.compile(r"^\d+(?:\.\d+)?$")
+
+_SUPPORT_PROMPT = """Question: {question}
+
+Evidence collected so far:
+{evidence}
+
+Proposed final answer: {answer}
+
+Does the evidence explicitly support this answer? Judge ONLY from the evidence
+above (an absence answer like "no" counts as supported when the evidence
+describes the relevant scene/content and it lacks the asked-about item).
+Reply with exactly one word: SUPPORTED, PARTIAL, or UNSUPPORTED."""
+
+
+class AnswerSupportVerifier:
+    """support(question, answer, evidence) -> [0, 1] or None (cannot judge).
+
+    ``lexical`` backend: fraction of the answer's content words found in the
+    union of evidence texts; when the answer contains numbers, the number match
+    fraction gates the score (min) so "up to 145 grams" cannot pass on the
+    generic words while 145 is nowhere in the evidence. Bare yes/no-style
+    answers return None (containment cannot verify absence claims).
+
+    ``api`` backend: LLM judge, SUPPORTED/PARTIAL/UNSUPPORTED -> 1.0/0.5/0.0;
+    unparseable replies return None so the label falls back to outcome-only
+    rather than injecting a fabricated support value.
+
+    Empty evidence -> 0.0 in both backends: answering with nothing retrieved is
+    by definition unsupported.
+    """
+
+    def __init__(self, backend: str = "lexical", generator=None) -> None:
+        backend = backend.lower()
+        if backend not in {"lexical", "api"}:
+            raise ValueError(f"Unknown support backend {backend!r}.")
+        if backend == "api" and generator is None:
+            raise ValueError("api support backend needs a generator.")
+        self.backend = backend
+        self.generator = generator
+
+    def score(
+        self,
+        *,
+        question: str,
+        answer: str,
+        evidence_texts: Sequence[str] = (),
+    ) -> float | None:
+        texts = [t for t in evidence_texts if t]
+        if not texts:
+            return 0.0
+        if self.backend == "lexical":
+            return self._lexical(answer, texts)
+        return self._api(question, answer, texts)
+
+    # ------------------------------------------------------------------ #
+    def _lexical(self, answer: str, texts: Sequence[str]) -> float | None:
+        if answer.strip().lower() in _UNVERIFIABLE_ANSWERS:
+            return None
+        tokens = _content_tokens(answer)
+        if not tokens:
+            return None
+        evidence_tokens: set[str] = set()
+        for t in texts:
+            evidence_tokens |= _content_tokens(t)
+        nums = {t for t in tokens if _NUM_TOKEN_RE.match(t)}
+        words = tokens - nums
+        word_score = len(words & evidence_tokens) / len(words) if words else 1.0
+        if not nums:
+            return word_score
+        num_score = len(nums & evidence_tokens) / len(nums)
+        # Numbers are the payload of value-type answers: unmatched numbers must
+        # not be rescued by generic word overlap.
+        return min(num_score, word_score) if words else num_score
+
+    def _api(self, question: str, answer: str, texts: Sequence[str]) -> float | None:
+        evidence = "\n".join(f"- {t}" for t in texts)
+        prompt = _SUPPORT_PROMPT.format(
+            question=question, evidence=evidence, answer=answer
+        )
+        reply = self.generator.generate(prompt, []).strip().upper()
+        if "UNSUPPORTED" in reply:
+            return 0.0
+        if "PARTIAL" in reply:
+            return 0.5
+        if "SUPPORTED" in reply:
+            return 1.0
+        return None
 
 
 class GroundingVerifier:

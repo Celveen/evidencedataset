@@ -75,9 +75,26 @@ def validate_sample(s: dict[str, Any], *, min_steps, max_steps, max_gap,
         elif not _in01(local):
             v.append(f"local_grounding={local} out of [0,1]")
 
+    # Answer-support fields (answer steps only may carry a numeric support)
+    support = s.get("answer_support")
+    if support is not None and not _in01(support):
+        v.append(f"answer_support={support} out of [0,1]")
+    if atype != "answer" and support is not None:
+        v.append("non-answer step must have answer_support=null")
+
     # Score fusion identity
     outcome = s["outcome_credit"]
-    expected = outcome if local is None else s["alpha"] * local + (1 - s["alpha"]) * outcome
+    if atype == "answer":
+        floor = s.get("support_floor", 0.3)
+        expected = (
+            outcome if support is None
+            else outcome * (floor + (1 - floor) * support)
+        )
+    else:
+        expected = (
+            outcome if local is None  # already flagged above; avoid a crash
+            else s["alpha"] * local + (1 - s["alpha"]) * outcome
+        )
     if _is_num(s["score"]) and abs(s["score"] - expected) > 1e-4:
         v.append(f"score {s['score']:.4f} != fuse {expected:.4f}")
 
@@ -107,6 +124,13 @@ def validate_sample(s: dict[str, Any], *, min_steps, max_steps, max_gap,
         visible |= {e["evidence_id"] for e in s.get("observation_evidence", [])}
         if visible and not (set(_EVID_RE.findall(r)) & visible):
             v.append("rationale cites no visible evidence_id")
+        # Verdict ⇄ score direction (hard contradictions only)
+        verdict = s.get("rationale_verdict")
+        if verdict is not None and _is_num(s["score"]):
+            if s["score"] >= 0.6 and verdict == "poor":
+                v.append(f"rationale_verdict 'poor' contradicts score {s['score']:.2f}")
+            elif s["score"] <= 0.4 and verdict == "good":
+                v.append(f"rationale_verdict 'good' contradicts score {s['score']:.2f}")
 
     # Re-distributable image path
     ip = s.get("image_path")

@@ -29,8 +29,13 @@ JSONL，每行一个 UTF-8 JSON 对象。
 | `outcome_credit` | float | 否 | `[0,1]` | tree-level credit：经过该节点的所有轨迹的 outcome 成功率（MC 估计） |
 | `n_traj_through` | int | 否 | `>=1` | 经过该节点的轨迹数（credit 的样本量） |
 | `alpha` | float | 否 | `[0,1]` | 双源融合权重 |
-| `score` | float | 否 | `[0,1]` | `alpha*local + (1-alpha)*outcome`；answer 步=outcome | 训练目标分 |
-| `rationale` | str | 否 | 非空，30–150 token | 强 LLM 解释该 score 的理由 |
+| `answer_support` | float \| null | 是 | `[0,1]`；**仅 answer 步**可为数值，非 answer 步恒 null | 答案是否被已积累证据支撑（lexical/API judge；判不了= null） |
+| `support_floor` | float | 否 | `[0,1]`，默认 0.3 | answer 步融合下限（见 score 公式） |
+| `unsupported_correct` | bool | 否 | — | answer 步且 `outcome>=0.5` 且 `support<=阈值` → true（参数化蒙对；**不丢弃**，留作 DPO 负样本） |
+| `gold_answers` | list | 否 | 同 §1.2 | 标准答案（QC 泄漏检查与后续分析用；PRM 输入不含此字段） |
+| `score` | float | 否 | `[0,1]` | 非 answer 步：`alpha*local + (1-alpha)*outcome`；answer 步：`outcome*(floor+(1-floor)*support)`，support=null 时退化为 outcome | 训练目标分 |
+| `rationale` | str | 否 | 非空，30–150 token | 强 LLM 解释该 score 的理由（VERDICT 行已剥离） |
+| `rationale_verdict` | str \| null | 是 | `good` \| `mixed` \| `poor` | rationale 的结论方向（与 score 方向一致性 QC 用） |
 | `rationale_backend` | str | 否 | `api` \| `mock` | rationale 来源 |
 | `rationale_attempts` | int | 否 | `>=1` | QC 重生成次数 |
 | `rationale_qc_pass` | bool | 否 | 发布集应**恒为 true** | 是否通过 QC |
@@ -80,11 +85,11 @@ JSONL，每行一个 UTF-8 JSON 对象。
 ## 2. 不变量（validator 强制检查）
 
 1. `sample_id` 全局唯一；`traj_id` 一致；`<traj_id>#s<n>` 与 `step_index` 对齐。
-2. 分数域：`local_grounding/outcome_credit/score/alpha ∈ [0,1]`；`local_grounding is null ⇔ action.type=="answer"`。
-3. `score == alpha*local + (1-alpha)*outcome`（answer 步 `== outcome`），容差 1e-6。
+2. 分数域：`local_grounding/outcome_credit/score/alpha/answer_support ∈ [0,1]`；`local_grounding is null ⇔ action.type=="answer"`；`answer_support` 仅 answer 步可为数值。
+3. `score == alpha*local + (1-alpha)*outcome`（非 answer 步）；answer 步 `score == outcome*(floor+(1-floor)*support)`（`support=null` 时 `== outcome`），容差 1e-6。
 4. 轨迹长度 ∈ `[min_steps, max_steps]`（默认 2–8）——这是**轨迹级前置门**（在 Step 4 对完整轨迹施加）。注意：per-sample 的 grounding-gap 过滤会合法地让某些轨迹在最终文件里只剩 1 个样本；该样本仍是有效的独立 (state, action, label) 节点，因此**最终文件里某轨迹样本数 < min_steps 不算违规**（仅作 info 报告）。
 5. `|local - outcome| <= max_grounding_outcome_gap`（默认 0.7）——发布集中不应有越界样本。
-6. `rationale_qc_pass == true`，且 rationale 满足：引用 ≥1 个**本样本可见**的 `evidence_id`、提到 `action.type`、30–150 token。
+6. `rationale_qc_pass == true`，且 rationale 满足：引用 ≥1 个**本样本可见**的 `evidence_id`、提到 `action.type`、30–150 token、**无 GT 泄漏**（不含 "ground truth"/"标准答案" 等评测措辞；不含"可见证据/问题/动作输入之外"的 gold answer 字符串——从证据里引用答案合法，凭空知道答案即泄漏）、`rationale_verdict` 与 score 方向无硬矛盾（score≥0.6 不得 poor，score≤0.4 不得 good）。
 7. **划分纯净**：同一 `query_id` 不跨 train/val/test。
 8. **可再分发**：`image_path` 不得是本机绝对路径（必须是相对 key / image_id / null）。
 9. `n_traj_through >= 1`。

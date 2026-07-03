@@ -44,6 +44,27 @@ verifier:                            # Step 2 grounding verifier（打分=检索
   image_cos_lo: 0.15                 # 文本-图像余弦（跨模态，偏低）
   image_cos_hi: 0.32
   alpha: 0.5                         # score = alpha*local + (1-alpha)*outcome
+  support:                           # answer 步 support 验证：答案是否被已积累证据支撑。
+                                     # 堵"答对但证据不支撑"（参数化蒙对）拿满分标签的口子——
+                                     # 否则 PRM 会学到"无证据也可以直接 answer"。
+    backend: api                     # api(LLM judge，正式；能判 yes/no/否定/转述)
+                                     # | lexical(离线：答案内容词+数字在证据中的覆盖率，
+                                     #   数字不匹配则一票否决；yes/no 判不了返回 null)
+                                     # | off(关闭，answer 步退回 outcome-only)
+    floor: 0.3                       # answer 步 score = outcome*(floor+(1-floor)*support)
+                                     # 保序：答错(0) < 答对无支撑(≈floor) < 答对有支撑(≈1)
+    unsupported_threshold: 0.3       # outcome>=0.5 且 support<=此值 → unsupported_correct=true
+                                     # （不丢弃：这些是 Stage 4.2 DPO 的现成负样本）
+    generation:                      # api judge 走与 rationale 相同的 DeepSeek 端点
+      backend: api                   # 每条 answer 步 1 次调用（≈每条轨迹 1 次），输出仅 1 词
+      provider: openai
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      max_new_tokens: 8
+      temperature: 0.0
+      timeout: 60
+      extra_body: {thinking: {type: disabled}}
 
 rationale:                           # Step 3 强 LLM rationale 生成
   backend: api                       # api | mock（mock = 模板，仅冒烟）

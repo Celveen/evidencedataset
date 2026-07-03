@@ -206,7 +206,14 @@ mock 模式的产物自动加 `mock_` 前缀（Step 4 则写进 `mock/` 子目�
 - `outcome_credit`：**tree-level credit** —— 同 query 内经过相同动作前缀的
   所有轨迹的成功率（`n_traj_through` 条的 Monte Carlo 均值）。**不是**把整条
   轨迹的 final reward 均摊给每个 step（那是报告 §4.1.1 点名的经典 bug）。
-- `score = alpha*local + (1-alpha)*outcome`，α 在 `verifier.alpha` 配置。
+- `answer_support`（仅 answer 步）：答案是否被**已积累证据**支撑（`verifier.support`
+  配置：api judge / lexical / off；判不了 = null）。堵"答对但证据不支撑"（参数化
+  蒙对）被打满分的口子——否则 PRM 会学到"无证据也可以直接 answer"。
+- `unsupported_correct`：answer 步且 `outcome>=0.5` 且 `support<=阈值` → true。
+  **不丢弃**——这些是 Stage 4.2"同状态 DPO 对"的现成负样本。
+- `score`：非 answer 步 `= alpha*local + (1-alpha)*outcome`（α 在 `verifier.alpha`）；
+  answer 步 `= outcome*(floor+(1-floor)*support)`，保序
+  答错(0) < 答对无支撑(≈floor=0.3) < 答对有支撑(≈1)；support=null 退化为 outcome。
 
 ### Step 3 → `data/trajectories/infoseek_rationales.jsonl`
 
@@ -244,6 +251,8 @@ data/etbench_open/
 | 轨迹过短/过长整条丢弃 | 2 ≤ 步数 ≤ 8 | `quality.min_steps` / `max_steps` | 报告 §3.5 |
 | grounding↔outcome 严重不一致的样本丢弃（noisy label） | \|local−outcome\| > 0.7 | `quality.max_grounding_outcome_gap` | 报告 §3.5 |
 | rationale 必须：引用 ≥1 个样本内可见的 evidence_id；明确提到动作类型；长度 30–150 token | — | 代码 `prm/rationale_gen.py::check_rationale` | 报告 §3.5 |
+| rationale **GT 泄漏检查**：不得含 "ground truth"/"标准答案" 等评测措辞；不得含可见证据/问题/动作输入之外的 gold answer 字符串（从证据引用答案合法，凭空知道即泄漏） | — | 同上 | DBAgent judge prompt 的 trajectory-realism 规则 |
+| rationale 须以 `VERDICT: good\|mixed\|poor` 结尾且**与 score 方向无硬矛盾**（score≥0.6 不得 poor、≤0.4 不得 good）；VERDICT 行剥离存入 `rationale_verdict` | — | 同上 | 防 (rationale, score) 自相矛盾的训练对 |
 | QC 不过自动重生成 | 至多 3 次 | `rationale.max_attempts` | 报告预估 ~15% 重生成 |
 
 人工抽检（报告要求，pipeline 不替代）：跑完后抽 500 条查 score 合理性、

@@ -3,7 +3,11 @@
     local grounding  — Stage 2 verifier（lexical 或 API LLM judge），graded 0-1
     outcome credit   — tree-level credit：经过该节点（同 query 内相同动作前缀）
                        的所有 trajectory 的成功率（Monte Carlo），不是均摊
-    score            — alpha*local + (1-alpha)*outcome（answer 步 outcome-only）
+    answer support   — answer 步专属：答案是否被已积累证据支撑（lexical/API judge）。
+                       堵"答对但证据不支撑"（参数化蒙对）被打满分的口子。
+    score            — 非 answer 步：alpha*local + (1-alpha)*outcome；
+                       answer 步：outcome * (floor + (1-floor)*support)，
+                       support 缺失时退化为 outcome-only
 
 核心逻辑在 evidencetree.prm.data_gen.label_steps；本脚本只做 IO 与统计。
 
@@ -19,8 +23,13 @@ from typing import Any
 
 from common import load_env, read_jsonl, resolve, tagged, write_jsonl
 
+from evidencetree.generation import build_generator
 from evidencetree.prm.data_gen import label_steps
-from evidencetree.prm.verifiers import ClipGroundingScorer, GroundingVerifier
+from evidencetree.prm.verifiers import (
+    AnswerSupportVerifier,
+    ClipGroundingScorer,
+    GroundingVerifier,
+)
 from evidencetree.utils import config as cfgutil
 from evidencetree.utils import get_logger
 
@@ -43,6 +52,21 @@ def build_verifier(cfg: dict[str, Any], mock: bool) -> GroundingVerifier:
     return GroundingVerifier(clip_scorer=scorer)
 
 
+def build_support_verifier(
+    cfg: dict[str, Any], mock: bool
+) -> AnswerSupportVerifier | None:
+    """Answer-support verifier (answer 步：答案 vs 已积累证据)。mock 强制 lexical；
+    backend=off 关闭（answer 步退回 outcome-only）。"""
+    s_cfg = dict(cfg.get("verifier", {}).get("support", {}))
+    backend = "lexical" if mock else s_cfg.get("backend", "lexical")
+    if backend == "off":
+        return None
+    generator = None
+    if backend == "api":
+        generator = build_generator(s_cfg.get("generation", {}))
+    return AnswerSupportVerifier(backend=backend, generator=generator)
+
+
 def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
     src = tagged(resolve(cfg["output"]["trajectories"]), mock)
     out = tagged(resolve(cfg["output"]["scored"]), mock)
@@ -54,19 +78,34 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
 
     trajectories = list(read_jsonl(src))
     verifier = build_verifier(cfg, mock)
-    alpha = float(cfg.get("verifier", {}).get("alpha", 0.5))
+    v_cfg = cfg.get("verifier", {})
+    alpha = float(v_cfg.get("alpha", 0.5))
+    s_cfg = v_cfg.get("support", {})
 
-    samples = label_steps(trajectories, verifier=verifier, alpha=alpha)
+    samples = label_steps(
+        trajectories,
+        verifier=verifier,
+        alpha=alpha,
+        support_verifier=build_support_verifier(cfg, mock),
+        support_floor=float(s_cfg.get("floor", 0.3)),
+        unsupported_threshold=float(s_cfg.get("unsupported_threshold", 0.3)),
+    )
     n = write_jsonl(out, samples)
 
     locals_ = [s["local_grounding"] for s in samples if s["local_grounding"] is not None]
+    supports = [s["answer_support"] for s in samples if s["answer_support"] is not None]
+    n_unsup = sum(1 for s in samples if s.get("unsupported_correct"))
     log.info(
         "step2 done: %d samples from %d trajectories | mean local %.3f | "
-        "mean outcome credit %.3f | mean score %.3f -> %s",
+        "mean outcome credit %.3f | mean score %.3f | mean answer support %.3f "
+        "(%d scored) | unsupported-correct answers %d -> %s",
         n, len(trajectories),
         sum(locals_) / len(locals_) if locals_ else 0.0,
         sum(s["outcome_credit"] for s in samples) / n if n else 0.0,
         sum(s["score"] for s in samples) / n if n else 0.0,
+        sum(supports) / len(supports) if supports else 0.0,
+        len(supports),
+        n_unsup,
         out,
     )
     return out

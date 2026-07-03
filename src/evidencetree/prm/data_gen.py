@@ -8,7 +8,13 @@ For each step of each trajectory:
                               action-sequence prefix within one query. This is
                               NOT trajectory-uniform final-reward averaging —
                               that is the classic bug (report §4.1.1).
-    * score = alpha * local + (1 - alpha) * outcome  (answer steps: outcome only)
+    * score = alpha * local + (1 - alpha) * outcome  (non-answer steps)
+    * answer steps additionally get an ANSWER-SUPPORT label — is the answer
+      backed by the accumulated evidence bundle? Their score is
+      outcome * (floor + (1 - floor) * support), which keeps the ordering
+      wrong (0) < correct-but-unsupported (~floor) < correct-and-supported (~1)
+      instead of rewarding parametric lucky guesses with a perfect label.
+      support=None (verifier off / cannot judge) falls back to outcome-only.
 
 Trajectory dicts follow the DatasetConstruct step-1 JSONL schema (see
 DatasetConstruct/README.md).
@@ -18,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from .verifiers import GroundingVerifier
+from .verifiers import AnswerSupportVerifier, GroundingVerifier
 
 PrefixKey = tuple[str, tuple[tuple[str, str], ...]]  # (query_id, action prefix)
 
@@ -49,10 +55,30 @@ def fuse_score(local: float | None, outcome: float, alpha: float = 0.5) -> float
     return alpha * float(local) + (1.0 - alpha) * float(outcome)
 
 
+def fuse_answer_score(
+    outcome: float, support: float | None, floor: float = 0.3
+) -> float:
+    """Answer-step score: outcome gated by evidence support.
+
+    Multiplicative in outcome (a wrong answer stays low no matter how
+    "supported" a spurious passage looks), but floor-lifted in support so a
+    correct-but-unsupported answer lands near ``floor`` — clearly below a
+    supported one, clearly above a wrong one — rather than being crushed to 0
+    and becoming indistinguishable from a wrong answer (which would also make
+    the label brittle to support-verifier noise).
+    """
+    if support is None:
+        return float(outcome)
+    return float(outcome) * (floor + (1.0 - floor) * float(support))
+
+
 def label_steps(
     trajectories: list[dict[str, Any]],
     verifier: GroundingVerifier | None = None,
     alpha: float = 0.5,
+    support_verifier: AnswerSupportVerifier | None = None,
+    support_floor: float = 0.3,
+    unsupported_threshold: float = 0.3,
 ) -> list[dict[str, Any]]:
     """Produce one step-level training sample per (trajectory, step).
 
@@ -78,6 +104,28 @@ def label_steps(
                 result_image_paths=[e["image_path"] for e in obs if e.get("image_path")],
             )
             outcome, n_through = credit[(traj["query_id"], prefix)]
+            is_answer = step["action_type"] == "answer"
+            support: float | None = None
+            if is_answer and support_verifier is not None:
+                support = support_verifier.score(
+                    question=traj["question"],
+                    answer=step["action_input"],
+                    evidence_texts=[e["text"] for e in evidence_before if e.get("text")],
+                )
+            score = (
+                fuse_answer_score(outcome, support, support_floor)
+                if is_answer
+                else fuse_score(local, outcome, alpha)
+            )
+            # "Correct but unsupported" answers are the parametric-guess failure
+            # mode: flagged (not dropped) — they are ready-made negatives for the
+            # Stage 4.2 same-state DPO pairs.
+            unsupported_correct = bool(
+                is_answer
+                and support is not None
+                and support <= unsupported_threshold
+                and outcome >= 0.5
+            )
             samples.append(
                 {
                     "sample_id": f"{traj['traj_id']}#s{step['step_index']}",
@@ -108,7 +156,11 @@ def label_steps(
                     "outcome_credit": outcome,
                     "n_traj_through": n_through,
                     "alpha": alpha,
-                    "score": fuse_score(local, outcome, alpha),
+                    "answer_support": support,
+                    "support_floor": support_floor,
+                    "unsupported_correct": unsupported_correct,
+                    "gold_answers": traj.get("gold_answers", []),
+                    "score": score,
                 }
             )
             actions_before.append(f"{step['action_type']}({step['action_input']})")
