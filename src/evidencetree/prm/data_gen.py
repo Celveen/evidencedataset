@@ -14,7 +14,10 @@ For each step of each trajectory:
       outcome * (floor + (1 - floor) * support), which keeps the ordering
       wrong (0) < correct-but-unsupported (~floor) < correct-and-supported (~1)
       instead of rewarding parametric lucky guesses with a perfect label.
-      support=None (verifier off / cannot judge) falls back to outcome-only.
+      support=None falls back to outcome-only (verifier off / cannot judge /
+      judge ruled NOT_REQUIRED — the question is answerable from the question
+      + image alone, so evidence entailment must not gate it). The raw judge
+      label is recorded in ``answer_support_label`` for diagnostics.
 
 Trajectory dicts follow the DatasetConstruct step-1 JSONL schema (see
 DatasetConstruct/README.md).
@@ -106,8 +109,9 @@ def label_steps(
             outcome, n_through = credit[(traj["query_id"], prefix)]
             is_answer = step["action_type"] == "answer"
             support: float | None = None
+            support_label: str | None = None
             if is_answer and support_verifier is not None:
-                support = support_verifier.score(
+                support_label, support = support_verifier.classify(
                     question=traj["question"],
                     answer=step["action_input"],
                     evidence_texts=[e["text"] for e in evidence_before if e.get("text")],
@@ -157,6 +161,7 @@ def label_steps(
                     "n_traj_through": n_through,
                     "alpha": alpha,
                     "answer_support": support,
+                    "answer_support_label": support_label,
                     "support_floor": support_floor,
                     "unsupported_correct": unsupported_correct,
                     "gold_answers": traj.get("gold_answers", []),

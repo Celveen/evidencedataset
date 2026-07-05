@@ -136,14 +136,17 @@ def test_answer_support_api_parses_judge_reply():
         def __init__(self, reply): self.reply = reply
         def generate(self, prompt, images): return self.reply
 
-    def score(reply):
+    def classify(reply):
         v = AnswerSupportVerifier(backend="api", generator=FakeGen(reply))
-        return v.score(question="q?", answer="a", evidence_texts=["ev"])
+        return v.classify(question="q?", answer="a", evidence_texts=["ev"])
 
-    assert score("SUPPORTED") == 1.0
-    assert score("PARTIAL") == 0.5
-    assert score("UNSUPPORTED") == 0.0
-    assert score("I cannot tell") is None  # unparseable -> no fabricated value
+    assert classify("SUPPORTED") == ("supported", 1.0)
+    assert classify("PARTIAL") == ("partial", 0.5)
+    assert classify("UNSUPPORTED") == ("unsupported", 0.0)
+    # NOT_REQUIRED (perception/logic/commonsense question) -> null: the answer
+    # must not be entailment-gated, score falls back to outcome-only.
+    assert classify("NOT_REQUIRED") == ("not_required", None)
+    assert classify("I cannot tell") == ("unparseable", None)
 
 
 def test_fuse_answer_score_preserves_ordering():
@@ -168,11 +171,34 @@ def test_label_steps_flags_unsupported_correct_answer():
     ans = samples[-1]
     assert ans["action"]["type"] == "answer"
     assert ans["answer_support"] == pytest.approx(0.0)
+    assert ans["answer_support_label"] == "lexical"
     assert ans["unsupported_correct"] is True
     assert ans["score"] == pytest.approx(0.3)  # outcome 1.0 gated to the floor
     # Search steps never carry a support value
     assert samples[0]["answer_support"] is None
+    assert samples[0]["answer_support_label"] is None
     assert samples[0]["unsupported_correct"] is False
+
+
+def test_label_steps_not_required_falls_back_to_outcome():
+    """A NOT_REQUIRED verdict must leave the answer outcome-only and NOT flag
+    unsupported_correct — the anti-guess gate only bites when evidence was
+    actually required."""
+    class NotRequiredVerifier:
+        def classify(self, **kwargs):
+            return ("not_required", None)
+
+    t = _traj("t1", "q1", [("text_search", "A"), ("answer", "B")], outcome=1.0)
+    t["steps"][0]["evidence"] = [
+        {"evidence_id": "e0", "doc_id": "d0", "title": "T", "text": "x", "score": 1.0}
+    ]
+    samples = label_steps([t], verifier=GroundingVerifier(),
+                          support_verifier=NotRequiredVerifier())
+    ans = samples[-1]
+    assert ans["answer_support"] is None
+    assert ans["answer_support_label"] == "not_required"
+    assert ans["unsupported_correct"] is False
+    assert ans["score"] == pytest.approx(1.0)  # outcome-only, no gating
 
 
 def test_label_steps_without_support_verifier_keeps_outcome_only():

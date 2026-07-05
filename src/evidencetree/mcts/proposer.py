@@ -137,11 +137,25 @@ Rules:
   landmark, person, ...) that the image and evidence have not established.
   Guessing an identity and searching for it propagates errors through the
   whole trajectory.
-- If the entity is not yet identified, FIRST use image_search to find corpus
-  entries matching the image, THEN text_search its specific attribute.
+- Using an entity name that ALREADY APPEARS IN THE EVIDENCE above is NOT
+  guessing: once image_search (or an earlier text_search) has surfaced the
+  entity, you SHOULD build text_search queries from that evidence-established
+  name.
+- Retrieval chain for entity questions: if the entity is not yet identified,
+  FIRST use image_search to match the image against the corpus. Once the
+  entity is identified but the ASKED ATTRIBUTE is still missing from the
+  evidence, the next action MUST include a text_search combining the
+  evidence-established entity name with the asked attribute (e.g.
+  "<entity name> opening date") — do NOT answer from an entity match alone.
+- Make the candidates genuinely different from each other: text_search
+  queries within one proposal must not be near-duplicates — vary the angle
+  (entity name + attribute, bare keywords, a rephrasing of the question), and
+  never re-issue a query already executed on this path.
 - Keep every search query faithful to the original question's intent; do not
   drift away from what is actually being asked.
-- Only answer when the collected evidence actually supports the answer.
+- Only answer when the collected evidence actually supports the answer, OR
+  when the question is answerable from the image and question alone by
+  perception, logic, or everyday commonsense (no external facts needed).
 Output ONLY the JSON lines."""
 
 

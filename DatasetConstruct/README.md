@@ -207,8 +207,11 @@ mock 模式的产物自动加 `mock_` 前缀（Step 4 则写进 `mock/` 子目�
   所有轨迹的成功率（`n_traj_through` 条的 Monte Carlo 均值）。**不是**把整条
   轨迹的 final reward 均摊给每个 step（那是报告 §4.1.1 点名的经典 bug）。
 - `answer_support`（仅 answer 步）：答案是否被**已积累证据**支撑（`verifier.support`
-  配置：api judge / lexical / off；判不了 = null）。堵"答对但证据不支撑"（参数化
-  蒙对）被打满分的口子——否则 PRM 会学到"无证据也可以直接 answer"。
+  配置：api judge / lexical / off）。堵"答对但证据不支撑"（参数化蒙对）被打满分的
+  口子——否则 PRM 会学到"无证据也可以直接 answer"。**null 的两种成因**（原始判定存
+  `answer_support_label`）：判不了（unverifiable/unparseable），或 judge 判
+  **NOT_REQUIRED**——题面+图像即可推导、无需外部知识（如 ScienceQA 推理选择题），
+  对这类题做蕴含门控会系统性错罚正确答案（v1.5.1）。null 一律退回 outcome-only。
 - `unsupported_correct`：answer 步且 `outcome>=0.5` 且 `support<=阈值` → true。
   **不丢弃**——这些是 Stage 4.2"同状态 DPO 对"的现成负样本。
 - `score`：非 answer 步 `= alpha*local + (1-alpha)*outcome`（α 在 `verifier.alpha`）；

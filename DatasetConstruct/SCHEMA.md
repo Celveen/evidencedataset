@@ -29,7 +29,8 @@ JSONL，每行一个 UTF-8 JSON 对象。
 | `outcome_credit` | float | 否 | `[0,1]` | tree-level credit：经过该节点的所有轨迹的 outcome 成功率（MC 估计） |
 | `n_traj_through` | int | 否 | `>=1` | 经过该节点的轨迹数（credit 的样本量） |
 | `alpha` | float | 否 | `[0,1]` | 双源融合权重 |
-| `answer_support` | float \| null | 是 | `[0,1]`；**仅 answer 步**可为数值，非 answer 步恒 null | 答案是否被已积累证据支撑（lexical/API judge；判不了= null） |
+| `answer_support` | float \| null | 是 | `[0,1]`；**仅 answer 步**可为数值，非 answer 步恒 null | 答案是否被已积累证据支撑（lexical/API judge；判不了或 NOT_REQUIRED = null） |
+| `answer_support_label` | str \| null | 是 | `supported`/`partial`/`unsupported`/`not_required`/`no_evidence`/`lexical`/`unverifiable`/`unparseable` | support 判定的原始类别（诊断 null 的成因：无需外部证据 vs 判不了） |
 | `support_floor` | float | 否 | `[0,1]`，默认 0.3 | answer 步融合下限（见 score 公式） |
 | `unsupported_correct` | bool | 否 | — | answer 步且 `outcome>=0.5` 且 `support<=阈值` → true（参数化蒙对；**不丢弃**，留作 DPO 负样本） |
 | `gold_answers` | list | 否 | 同 §1.2 | 标准答案（QC 泄漏检查与后续分析用；PRM 输入不含此字段） |

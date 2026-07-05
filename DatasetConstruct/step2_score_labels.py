@@ -95,10 +95,16 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
     locals_ = [s["local_grounding"] for s in samples if s["local_grounding"] is not None]
     supports = [s["answer_support"] for s in samples if s["answer_support"] is not None]
     n_unsup = sum(1 for s in samples if s.get("unsupported_correct"))
+    from collections import Counter
+
+    label_dist = Counter(
+        s["answer_support_label"] for s in samples
+        if s.get("answer_support_label") is not None
+    )
     log.info(
         "step2 done: %d samples from %d trajectories | mean local %.3f | "
         "mean outcome credit %.3f | mean score %.3f | mean answer support %.3f "
-        "(%d scored) | unsupported-correct answers %d -> %s",
+        "(%d scored) | unsupported-correct answers %d | support labels %s -> %s",
         n, len(trajectories),
         sum(locals_) / len(locals_) if locals_ else 0.0,
         sum(s["outcome_credit"] for s in samples) / n if n else 0.0,
@@ -106,6 +112,7 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
         sum(supports) / len(supports) if supports else 0.0,
         len(supports),
         n_unsup,
+        dict(label_dist),
         out,
     )
     return out

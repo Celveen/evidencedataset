@@ -175,10 +175,22 @@ Evidence collected so far:
 
 Proposed final answer: {answer}
 
-Does the evidence explicitly support this answer? Judge ONLY from the evidence
-above (an absence answer like "no" counts as supported when the evidence
-describes the relevant scene/content and it lacks the asked-about item).
-Reply with exactly one word: SUPPORTED, PARTIAL, or UNSUPPORTED."""
+Classify how this answer relates to the evidence. Reply with exactly one word:
+
+- SUPPORTED: the evidence explicitly contains or entails the answer. For a
+  multiple-choice answer it is enough that the evidence entails the CONTENT of
+  the chosen option (verbatim wording is not required). An absence answer like
+  "no" counts as supported when the evidence describes the relevant
+  scene/content and it lacks the asked-about item.
+- PARTIAL: the evidence points toward the answer but leaves a substantive part
+  of it unconfirmed.
+- UNSUPPORTED: the answer relies on external factual knowledge (entity facts,
+  numbers, dates, names, statistics) that the evidence does not contain.
+- NOT_REQUIRED: the answer is derivable from the question text and the visible
+  image content alone, by perception, logic, or everyday commonsense — no
+  external factual knowledge is needed. Do NOT use this for fine-grained
+  entity facts (species data, dates, measurements, biographies): those always
+  require evidence."""
 
 
 class AnswerSupportVerifier:
@@ -190,12 +202,21 @@ class AnswerSupportVerifier:
     generic words while 145 is nowhere in the evidence. Bare yes/no-style
     answers return None (containment cannot verify absence claims).
 
-    ``api`` backend: LLM judge, SUPPORTED/PARTIAL/UNSUPPORTED -> 1.0/0.5/0.0;
-    unparseable replies return None so the label falls back to outcome-only
-    rather than injecting a fabricated support value.
+    ``api`` backend: LLM judge with four categories —
+    SUPPORTED/PARTIAL/UNSUPPORTED -> 1.0/0.5/0.0, and NOT_REQUIRED -> None for
+    answers derivable from the question + visible image alone (perception /
+    logic / commonsense questions, e.g. ScienceQA reasoning MC): gating those
+    on evidence entailment would systematically punish correct reasoning
+    answers that no document could ever "support". Unparseable replies also
+    return None so the label falls back to outcome-only rather than injecting
+    a fabricated support value.
 
     Empty evidence -> 0.0 in both backends: answering with nothing retrieved is
     by definition unsupported.
+
+    ``classify()`` additionally returns the raw label so the dataset can record
+    WHY a support value is null (not_required vs unverifiable vs unparseable) —
+    needed to diagnose distribution shifts across benchmarks.
     """
 
     def __init__(self, backend: str = "lexical", generator=None) -> None:
@@ -214,20 +235,32 @@ class AnswerSupportVerifier:
         answer: str,
         evidence_texts: Sequence[str] = (),
     ) -> float | None:
+        return self.classify(
+            question=question, answer=answer, evidence_texts=evidence_texts
+        )[1]
+
+    def classify(
+        self,
+        *,
+        question: str,
+        answer: str,
+        evidence_texts: Sequence[str] = (),
+    ) -> tuple[str, float | None]:
+        """Return (label, support value); value None = fall back to outcome."""
         texts = [t for t in evidence_texts if t]
         if not texts:
-            return 0.0
+            return ("no_evidence", 0.0)
         if self.backend == "lexical":
             return self._lexical(answer, texts)
         return self._api(question, answer, texts)
 
     # ------------------------------------------------------------------ #
-    def _lexical(self, answer: str, texts: Sequence[str]) -> float | None:
+    def _lexical(self, answer: str, texts: Sequence[str]) -> tuple[str, float | None]:
         if answer.strip().lower() in _UNVERIFIABLE_ANSWERS:
-            return None
+            return ("unverifiable", None)
         tokens = _content_tokens(answer)
         if not tokens:
-            return None
+            return ("unverifiable", None)
         evidence_tokens: set[str] = set()
         for t in texts:
             evidence_tokens |= _content_tokens(t)
@@ -235,25 +268,29 @@ class AnswerSupportVerifier:
         words = tokens - nums
         word_score = len(words & evidence_tokens) / len(words) if words else 1.0
         if not nums:
-            return word_score
+            return ("lexical", word_score)
         num_score = len(nums & evidence_tokens) / len(nums)
         # Numbers are the payload of value-type answers: unmatched numbers must
         # not be rescued by generic word overlap.
-        return min(num_score, word_score) if words else num_score
+        return ("lexical", min(num_score, word_score) if words else num_score)
 
-    def _api(self, question: str, answer: str, texts: Sequence[str]) -> float | None:
+    def _api(self, question: str, answer: str, texts: Sequence[str]) -> tuple[str, float | None]:
         evidence = "\n".join(f"- {t}" for t in texts)
         prompt = _SUPPORT_PROMPT.format(
             question=question, evidence=evidence, answer=answer
         )
         reply = self.generator.generate(prompt, []).strip().upper()
+        # Order matters: "UNSUPPORTED" contains "SUPPORTED", and NOT_REQUIRED
+        # must win over any other word the judge echoes.
+        if "NOT_REQUIRED" in reply or "NOT REQUIRED" in reply:
+            return ("not_required", None)
         if "UNSUPPORTED" in reply:
-            return 0.0
+            return ("unsupported", 0.0)
         if "PARTIAL" in reply:
-            return 0.5
+            return ("partial", 0.5)
         if "SUPPORTED" in reply:
-            return 1.0
-        return None
+            return ("supported", 1.0)
+        return ("unparseable", None)
 
 
 class GroundingVerifier:

@@ -74,7 +74,7 @@ root "这栋建筑正式开放日期是哪一天？" (图: Pro Football Hall of 
 |---|---|---|
 | `local_grounding` | CLIP verifier | 这一步**检索回的结果**与问题的相关度（0–1；answer 步 = null） |
 | `outcome_credit` | tree-level credit | 经过**相同动作前缀**的所有轨迹的成功率（MC 均值） |
-| `answer_support`（仅 answer 步，v1.5） | support verifier | 答案是否被已积累证据支撑（判不了 = null） |
+| `answer_support`（仅 answer 步，v1.5） | support verifier | 答案是否被已积累证据支撑（判不了 = null；judge 判 NOT_REQUIRED——题面+图像即可推导、无需外部知识——也 = null，v1.5.1，防止蕴含门控错罚推理题的正确答案） |
 | `score` | 融合公式 | 非 answer 步：`α·local + (1−α)·outcome`；answer 步：`outcome × (0.3 + 0.7·support)` |
 
 **tree-level credit 用上面那棵树算给你看**（这是"不是均摊"的意义所在）：

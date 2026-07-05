@@ -43,6 +43,16 @@
 > 4. **文档收口**：删除《EvidenceTree_实现报告_for_ClaudeCode.md》（其 Stage 6 bandit、modality bonus 阶段规范与 v1.4 冲突，双文档漂移），实现规范以本报告 + 代码库现状为准；本文件更名去掉文件名中的过期版本号。
 > 5. **代码同步**：`prm/verifiers.py::AnswerSupportVerifier`、`prm/data_gen.py::fuse_answer_score`、`prm/rationale_gen.py` verdict/泄漏 QC、`DatasetConstruct` config/SCHEMA/validator 同步；测试 63→72 全过，mock 四步 pipeline + validator 零违规。
 
+> **v1.5.1 相对 v1.5 的修订（100q × 3 数据集复盘驱动，2026-07）**：
+> 0. **复盘诊断**（100 query/数据集、P=10 真实运行的节点分布报告）：
+>    - **InfoSeek**（表现最弱，低分节点 316/426）：病灶不在 support judge——174 个 support=0 的 answer 里 ~164 个同时也答错（unsupported_correct 仅 10），judge 与 outcome 双双指向真实失败。真正的病因在上游三处：(a) **动作配比倒挂**（image_search:text_search = 166:54，而语料纯文本，图→文 CLIP 跨模态检索是最弱通路）；(b) **检索链断裂**（轨迹均 2.2 步 = `image_search → answer`，缺"用证据中实体名 text_search 属性"的第二环；policy prompt 的 anti-fabrication 规则未放行"证据已确认的实体名"，把这条路也堵了）；(c) **轨迹多样性坍缩**（去重后仅 ~2 条/query，树不分叉 → tree credit 退化 0/1、gap 过滤变激进、DPO 兄弟对稀缺）。outcome metric 已排除嫌疑（step1 用 `infoseek_accuracy`，数值题走 range）。
+>    - **ScienceQA**：unsupported_correct 105/170——答案对、judge 判不支撑。这是 **support 蕴含语义与推理型选择题的失配**：答案由题面+选项推导，证据里不会写"所以选 A"，judge 按蕴含标准判 UNSUPPORTED 是职责内行为但标准本身不适用；105 个正确答案被钉在 floor=0.3，属系统性错罚（其 rationale_qc 丢弃 25 个也多为由此产生的 verdict 矛盾）。
+>    - **support=0 数量与"相乘归零"澄清**：floor 的存在使 support=0 且答对 → 0.3 而非 0（ScienceQA 中分档 120 个的主要来源即这 105 个）；score=0 仅由 outcome=0 造成。0 档本身合理且无害。
+> 1. **support judge 增设第四类 `NOT_REQUIRED` → null（退回 outcome-only）**：判据写死为"答案可由题面 + 可见图像内容经感知/逻辑/常识直接推导，不依赖外部事实知识；细粒度实体事实（物种数据、日期、度量、传记）永远需要证据"。选择题 rubric 同步放宽：证据蕴含**正确选项的内容**即算支撑，不要求逐字。原始判定存入新字段 `answer_support_label`（supported/partial/unsupported/not_required/…），用于诊断 null 的成因与跨数据集分布。
+> 2. **policy prompt 修检索链（针对 InfoSeek (a)(b)）**：显式放行"证据中已出现的实体名"（不算臆造）；加硬规则——实体已识别而所问属性缺失时，下一步必须提议"实体名+属性"的 text_search，不得凭实体命中直接 answer；answer 的许可条件同步加入"或题面+图像即可推导（无需外部知识）"与 NOT_REQUIRED 对齐。
+> 3. **提议多样性（针对 InfoSeek (c)）**：同批候选的 text_search query 必须互异且角度不同（实体名+属性 / 关键词式 / 换措辞），且不得重发本路径已执行过的 query。
+> 4. **数据配比立场（记录）**：不采纳"GQA 60% 主力"——GQA 健康源于 oracle scene-graph 语料（image_search 必中），其信念迁移不到主表战场 InfoSeek/E-VQA；GQA 定位为课程起步 + verifier 校准集，主力应是修复后的 InfoSeek。ScienceQA 保持小份额。修复后重跑 100q 验证三个指标：InfoSeek text:image 比、轨迹数/query、ScienceQA unsupported_correct。
+
 ---
 
 ## 一、问题定义
@@ -279,7 +289,7 @@ outcome 单独决定 answer 步标签，会把"答案判对但证据不支撑"�
 
 $$R_{\text{answer}}(s) = R_{\text{outcome}}(s, a_{\text{ans}}) \cdot \big(\gamma + (1-\gamma)\cdot \text{supp}(y, \mathcal{E}_s)\big), \qquad \gamma = 0.3$$
 
-其中 $\text{supp}(y, \mathcal{E}_s) \in [0,1]$ 度量答案 $y$ 是否被状态 $s$ 已积累的证据 bundle $\mathcal{E}_s$ 支撑（API judge 三档或离线 lexical；判不了 = null 时退化为 outcome-only；空 bundle → 0）。
+其中 $\text{supp}(y, \mathcal{E}_s) \in [0,1]$ 度量答案 $y$ 是否被状态 $s$ 已积累的证据 bundle $\mathcal{E}_s$ 支撑（API judge 或离线 lexical；判不了 = null 时退化为 outcome-only；空 bundle → 0）。API judge 为**四类判定**（v1.5.1）：SUPPORTED/PARTIAL/UNSUPPORTED → 1/0.5/0；**NOT_REQUIRED → null**——答案可由题面+可见图像经感知/逻辑/常识直接推导、不依赖外部事实知识的题（如推理型选择题），不做蕴含门控（否则会系统性错罚正确的推理答案：证据里不会写"所以选 A"）。细粒度实体事实永远不适用 NOT_REQUIRED。原始判定存 `answer_support_label` 供分布诊断。
 
 **为什么是"乘法 + 下限"而不是纯乘法或加权和**：outcome 必须做乘法门控——答错是最干净的负信号，不能被 support 抬起（加权和会给"答错但碰上假证据"的样本 0.5 分）；下限 $\gamma$ 保住排序 **答错(0) < 答对无支撑(≈γ) < 答对有支撑(≈1)**——纯乘法会把"蒙对"压成 0、与答错无法区分，且对 support verifier 的漏判噪声过脆（转述未命中会把证据扎实的正确答案误杀成硬负样本）。
 
