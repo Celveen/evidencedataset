@@ -243,60 +243,75 @@ we print is quoted from the original publication cited in the caption.
 % -------------------------------------------------------------------------
 \begin{figure*}[t]
 \centering
-\resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
   font=\small,
-  box/.style={draw,rounded corners=2pt,align=center,inner sep=3pt,minimum height=6mm},
+  box/.style={draw,rounded corners=2pt,align=center,inner sep=3pt},
   state/.style={box,fill=blue!8,font=\scriptsize},
-  act/.style={font=\tiny,midway,fill=white,inner sep=1pt,align=center},
-  prmbox/.style={box,fill=green!12,thick},
+  deadstate/.style={box,fill=red!8,font=\scriptsize},
+  goal/.style={box,fill=green!14,font=\scriptsize},
+  elab/.style={font=\tiny,midway,fill=white,inner sep=1.5pt,align=center},
+  prmbox/.style={box,fill=green!12,thick,font=\scriptsize},
   corpus/.style={cylinder,shape border rotate=90,draw,aspect=0.12,align=center,
                  inner sep=2.5pt,fill=gray!10,minimum height=9mm,font=\tiny},
+  tse/.style={-{Stealth[length=2mm]},thick,blue!55!black},
+  ise/.style={-{Stealth[length=2mm]},thick,orange!80!black},
+  ase/.style={-{Stealth[length=2mm]},thick,green!45!black},
+  qarr/.style={-{Stealth[length=1.5mm]},green!50!black,semithick,dotted},
   arr/.style={-{Stealth[length=2mm]},thick},
-  qarr/.style={-{Stealth[length=1.6mm]},green!50!black,semithick},
 ]
-% =================== PANEL (a): inference ===================
-\node[box,fill=violet!10,align=left,font=\scriptsize,text width=27mm] (query) at (0,0)
-  {$q$: ``When did this building officially open?''\\
-   $I$: photo of an unnamed museum building};
-\node[state,right=6mm of query] (s0) {$s_0$: $\mathcal{E}_0{=}\varnothing$};
-\draw[arr] (query) -- (s0);
-% branch 1 (bad): guessed text_search, pruned
-\node[state,above right=5mm and 9mm of s0,fill=red!8] (s1)
-  {$s_1$: $\mathcal{E}{=}\{e_1\}$ off-topic};
-\draw[arr] (s0) -- node[act]{\textsc{text\_search}\\$Q{=}0.21$} (s1);
-\node[font=\tiny,text=red!70,above=0.5mm of s1,align=center] (prun)
-  {low grounding $\Rightarrow$ pruned};
-\draw[arr,dashed,red!70] (s1.west) to[bend right=20]
-  node[above,sloped,font=\tiny,text=red!70]{backtrack} (s0.north);
-% branch 2 (good): image_search disambiguates entity
-\node[state,below right=5mm and 9mm of s0] (s2)
-  {$s_2$: $\mathcal{E}{=}\{e_2\}$, entity page\\``Pro Football Hall of Fame''};
-\draw[arr] (s0) -- node[act]{\textsc{image\_search}\\$Q{=}0.78$} (s2);
-% follow-up text_search fetches the attribute
-\node[state,right=17mm of s2] (s3)
-  {$s_3$: $\mathcal{E}{=}\{e_2,e_3\}$, page $+$\\opening-date passage};
-\draw[arr] (s2) -- node[act]{\textsc{text\_search}\\$Q{=}0.85$} (s3);
-% answer
-\node[box,fill=green!14,right=8mm of s3,font=\scriptsize] (ans)
-  {\textsc{answer} $Q{=}0.91$\\``Sept.\ 7, 1963'' \textcolor{green!50!black}{$\checkmark$}};
-\draw[arr] (s3) -- (ans);
-% corpus
-\node[corpus,below=11mm of s0,xshift=1mm] (corp)
+% ---------------- root (depth 0) ----------------
+\node[box,fill=violet!10,font=\scriptsize,text width=52mm] (root) at (0,0)
+  {$s_0$:\ \ $q$ = ``When did this building officially open?''\\
+   $I$ = photo of an unnamed museum\hspace{2mm}$\mathcal{E}_0=\varnothing$};
+% ---------------- depth 1: all three typed actions ----------------
+\node[deadstate,text width=33mm] (s1) at (-5.6,-2.2)
+  {$s_1$: $\mathcal{E}{=}\{e_1\}$\\$e_1$: passage about a\\\emph{different} museum};
+\node[state,text width=36mm]     (s2) at (0,-2.2)
+  {$s_2$: $\mathcal{E}{=}\{e_2\}$\\$e_2$: entity page\\``Pro Football Hall of Fame''};
+\node[deadstate,text width=30mm] (sA) at (5.6,-2.2)
+  {\textsc{answer}(``1962'')\\no supporting evidence};
+\draw[tse] (root.south west)++(0.4,0) -- node[elab]{\textsc{text\_search}\\(guessed entity name)\\$Q{=}0.21$} (s1.north);
+\draw[ise] (root.south) -- node[elab]{\textsc{image\_search}$(I)$\\$Q{=}0.78$} (s2.north);
+\draw[ase] (root.south east)++(-0.4,0) -- node[elab]{\textsc{answer}\\(premature)\\$Q{=}0.12$} (sA.north);
+\node[font=\tiny,text=red!70,below=0.6mm of s1] (pr1) {$\times$ pruned (low $g$, low $Q$)};
+\node[font=\tiny,text=red!70,below=0.6mm of sA] (pr2) {$\times$ pruned (support gate)};
+\draw[arr,dashed,red!70] (s1.west) to[bend left=35]
+  node[above,sloped,font=\tiny,text=red!70]{backtrack} (root.west);
+% ---------------- depth 2: attribute lookup on established entity ----------------
+\node[state,text width=42mm] (s3) at (0,-4.5)
+  {$s_3$: $\mathcal{E}{=}\{e_2,e_3\}$\\$e_3$: ``\ldots officially opened on\\September 7, 1963\ldots''};
+\draw[tse] (s2.south) -- node[elab]{\textsc{text\_search}(``Pro Football\\Hall of Fame opening date'')\\$Q{=}0.85$} (s3.north);
+% ---------------- depth 3: terminal answer ----------------
+\node[goal] (ans) at (0,-6.2)
+  {\textsc{answer}(``September 7, 1963'')\ \textcolor{green!50!black}{$\checkmark$}};
+\draw[ase] (s3.south) -- node[elab]{$Q{=}0.91$} (ans.north);
+% ---------------- action-space legend ----------------
+\node[draw,rounded corners=1.5pt,fill=gray!4,align=left,font=\tiny,anchor=north west]
+  (leg) at (-8.6,0.6)
+  {\textbf{Typed action space} $\mathcal{A}$ (edge colour):\\[1pt]
+   \textcolor{blue!55!black}{$\longrightarrow$}\ \textsc{text\_search}$(x)$: query the corpus with text\\
+   \textcolor{orange!80!black}{$\longrightarrow$}\ \textsc{image\_search}$(I)$: query it with the image\\
+   \textcolor{green!45!black}{$\longrightarrow$}\ \textsc{answer}$(y)$: terminate the trajectory\\[2pt]
+   every internal node exposes all of $\mathcal{A}$;\\
+   the PRM decides which branch is worth descending};
+% ---------------- ET-PRM (right) ----------------
+\node[prmbox,align=center,text width=34mm] (prm) at (6.4,-4.4)
+  {\prm{} (frozen at inference)\\score-only head $\rightarrow Q_{\phi}(a \mid s)$\\
+   scores \emph{every} candidate edge};
+\draw[qarr] (prm.north west) to[bend right=12] ($(root.south east)!0.45!(sA.north west)$);
+\draw[qarr] (prm.west) to[bend left=6] ($(s2.south)!0.5!(s3.north)$);
+\draw[qarr] (prm.south west) to[bend left=12] ($(s3.south)!0.5!(ans.north)$);
+% ---------------- corpus (left) ----------------
+\node[corpus] (corp) at (-6.6,-4.5)
   {unified CLIP corpus\\(text $+$ image docs)};
-\draw[arr,<->,gray] (s0.south) to[bend right=8] (corp.north);
-\draw[arr,<->,gray] (s2.south west) to[bend left=8] (corp.east);
-% PRM
-\node[prmbox,above=9mm of s3,font=\scriptsize,align=center] (prm)
-  {\prm{} (frozen at inference)\\score-only head $\rightarrow Q_{\phi}(a \mid s)$};
-\draw[qarr] (prm.south west) to[bend right=6] (s2.north);
-\draw[qarr] (prm.south) -- (s3.north);
-% phase loop
-\node[font=\scriptsize\itshape,text=gray!90!black,below=1.5mm of corp,xshift=24mm] (phase)
+\draw[arr,<->,gray] (corp.east) to[bend right=8]
+  node[below,sloped,font=\tiny,text=gray]{search edges execute here} ($(s2.south west)!0.4!(s3.north west)$);
+% ---------------- phase loop ----------------
+\node[font=\scriptsize\itshape,text=gray!90!black] (phase) at (0,-7.3)
   {\textbf{loop:} select (UCB1, Eq.~\ref{eq:ucb}) $\to$ expand (policy proposes typed actions) $\to$ simulate $\to$ backup};
-% =================== PANEL (b): training (horizontal row below) ===================
-\node[box,fill=yellow!12,align=left,font=\scriptsize,text width=35mm,
-      anchor=north west] (roll) at ([yshift=-8mm]query.west |- phase.south)
+% ---------------- panel (b): training row ----------------
+\node[box,fill=yellow!12,align=left,font=\scriptsize,text width=35mm,anchor=north west]
+  (roll) at (-8.6,-8.2)
   {\textbf{1. Rollouts.} Training-free policy runs MCTS per query; \emph{all}
    trajectories kept (successes and failures).};
 \node[box,fill=yellow!12,align=left,font=\scriptsize,right=3.5mm of roll,text width=43mm] (lab)
@@ -306,34 +321,38 @@ we print is quoted from the original publication cited in the caption.
 \node[box,fill=yellow!12,align=left,font=\scriptsize,right=3.5mm of lab,text width=33mm] (rat)
   {\textbf{3. Rationales} (strong LLM) under leakage-proof QC (5 rules).};
 \node[box,fill=green!12,align=left,font=\scriptsize,right=3.5mm of rat,text width=37mm] (train)
-  {\textbf{4. \prm{} training:} generative SFT $\to$ same-state DPO $\to$ calibration; deployed as the value
-   oracle in (a).};
+  {\textbf{4. \prm{} training:} generative SFT $\to$ same-state DPO $\to$
+   calibration; deployed as the value oracle in (a).};
 \draw[arr] (roll)--(lab); \draw[arr] (lab)--(rat); \draw[arr] (rat)--(train);
-% panel frames (drawn last, border only)
-\node[fit=(query)(s1)(s2)(s3)(ans)(corp)(prm)(phase)(prun),draw=gray!50,dashed,rounded corners,
-      inner sep=3pt,label={[gray,font=\small\bfseries]north west:(a) Inference: PRM-guided MCTS over retrieval actions}] {};
+% ---------------- panel frames ----------------
+\node[fit=(leg)(root)(s1)(sA)(s3)(ans)(prm)(corp)(phase)(pr1)(pr2),
+      draw=gray!50,dashed,rounded corners,inner sep=3pt,
+      label={[gray,font=\small\bfseries,anchor=south west]north west:(a) Inference: PRM-guided MCTS over the retrieval action space}] {};
 \node[fit=(roll)(lab)(rat)(train),draw=gray!50,dashed,rounded corners,inner sep=3pt,
-      label={[gray,font=\small\bfseries,yshift=1mm]south west:(b) Training (\dataset{})}] {};
-\end{tikzpicture}}
-
-
+      label={[gray,font=\small\bfseries,anchor=north west,yshift=-0.5mm]south west:(b) Training (\dataset{})}] {};
+\end{tikzpicture}
 \caption{\textbf{\ours{} overview.} \textbf{(a)}~The search tree lives in
-the \emph{retrieval action space}: every edge is a typed action executed
-against the benchmark-provided corpus (one unified CLIP index for text and
-image documents), and every node is the resulting evidence state. The
-example illustrates the intended cross-modal plan on an entity question
-(the $Q$ values are illustrative, not measured): a
-guessed \textsc{text\_search} retrieves off-topic evidence and is pruned
-by its low PRM value ($Q{=}0.21$); \textsc{image\_search} disambiguates
-the entity ($Q{=}0.78$); a follow-up \textsc{text\_search} on the
-evidence-established name fetches the asked attribute ($Q{=}0.85$); the
-\textsc{answer} edge closes the trajectory. UCB1 selection
-(Eq.~\ref{eq:ucb}) uses the PRM value as the only quality signal, so
-low-$Q$ branches are abandoned --- backtracking is a first-class
-operation. \textbf{(b)}~The PRM is trained on \dataset{}: MCTS rollouts
-are labeled per step with dual-source rewards and an answer-support gate,
-paired with QC-filtered rationales, and distilled into \prm{} by
-generative SFT, same-state preference optimization, and calibration.}
+the \emph{retrieval action space}: the root holds the question, the query
+image, and an empty evidence bundle; every internal node exposes the full
+typed action space $\mathcal{A}$ (legend, edges coloured by action type);
+every edge executes its action against the benchmark-provided corpus (one
+unified CLIP index for text and image documents) and the child node is the
+resulting evidence state. The frozen \prm{} scores every candidate edge
+(dotted green; the $Q$ values are illustrative, not measured) and UCB1
+selection (Eq.~\ref{eq:ucb}) decides where to descend. Depth~1 shows all
+three action types on the example entity question: a \textsc{text\_search}
+built on a \emph{guessed} entity name retrieves off-topic evidence and is
+pruned ($Q{=}0.21$); a premature \textsc{answer} without evidence is
+equally down-weighted ($Q{=}0.12$); \textsc{image\_search} matches the
+photo against the corpus and disambiguates the entity ($Q{=}0.78$).
+Depth~2 issues the follow-up \textsc{text\_search} on the
+evidence-established name and retrieves the asked attribute ($Q{=}0.85$);
+the \textsc{answer} edge closes the trajectory ($Q{=}0.91$). Low-$Q$
+branches are abandoned --- backtracking is a first-class operation.
+\textbf{(b)}~The PRM is trained on \dataset{}: MCTS rollouts are labeled
+per step with dual-source rewards and an answer-support gate, paired with
+QC-filtered rationales, and distilled into \prm{} by generative SFT,
+same-state preference optimization, and calibration.}
 \label{fig:overview}
 \end{figure*}
 
