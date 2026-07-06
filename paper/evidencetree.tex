@@ -1,11 +1,11 @@
 % =========================================================================
-% EvidenceTree — AAAI-format paper draft.
-% NOTE: for actual AAAI submission, replace the preamble below with the
-% official AAAI author kit (aaai2027.sty + aaai2027.bst) — this preamble
-% only *mimics* the AAAI two-column camera-ready look so the draft compiles
-% anywhere. Our own experimental numbers are intentionally left as "--"
-% (training in progress); all baseline numbers are quoted from the cited
-% papers (table sources given in each caption).
+% EvidenceTree — AAAI-format paper draft (revision 2).
+% For actual AAAI submission, replace the preamble with the official AAAI
+% author kit (aaai2027.sty + aaai2027.bst) — this preamble only *mimics*
+% the AAAI two-column look so the draft compiles anywhere. Our own
+% experimental numbers are intentionally left as "--" (training in
+% progress); all baseline numbers are quoted from the cited papers (table
+% sources given in each caption; per-cell provenance in NUMBERS_SOURCES.md).
 % =========================================================================
 \documentclass[letterpaper,twocolumn,10pt]{article}
 
@@ -24,12 +24,25 @@
 \usepackage{algpseudocode}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds,calc}
-\usepackage[numbers,sort&compress]{natbib} % swap for aaai27.bst author-year at submission
+\usepackage[numbers,sort&compress]{natbib} % swap for aaai27.bst at submission
 \usepackage{xcolor}
+\usepackage{listings}
 \usepackage[hidelinks]{hyperref}
 \usepackage{enumitem}
 \setlist{nosep,leftmargin=1.2em}
 
+\definecolor{promptbg}{RGB}{252,240,244}
+\definecolor{promptframe}{RGB}{190,120,140}
+\definecolor{casebg}{RGB}{240,246,252}
+\lstdefinestyle{prompt}{
+  basicstyle=\scriptsize\ttfamily, breaklines=true, breakindent=0pt,
+  frame=single, rulecolor=\color{promptframe}, backgroundcolor=\color{promptbg},
+  framerule=0.6pt, framesep=4pt, aboveskip=4pt, belowskip=6pt,
+  xleftmargin=5pt, xrightmargin=5pt,
+  postbreak=\mbox{\textcolor{promptframe}{$\hookrightarrow$}\space},
+  columns=fullflexible, keepspaces=true, upquote=true}
+
+\raggedbottom
 \captionsetup{font=small,labelfont=bf}
 \newcommand{\ours}{EvidenceTree}
 \newcommand{\dataset}{ETBench-Open}
@@ -37,7 +50,7 @@
 \newcommand{\NA}{--}          % our numbers: training in progress
 \newcommand{\best}[1]{\textbf{#1}}
 
-\title{\textbf{\ours: Grounded Process Reward Models for Monte Carlo Tree Search\\over Retrieval Actions in Multimodal Retrieval-Augmented Generation}}
+\title{\textbf{\ours{}: Process-Rewarded Search over Retrieval Actions\\for Multimodal RAG}}
 \author{Anonymous submission}
 \date{}
 
@@ -46,175 +59,281 @@
 
 % =========================================================================
 \begin{abstract}
-Multimodal retrieval-augmented generation (RAG) systems make a sequence of
-retrieval decisions --- what to search, with which modality, and when to stop
---- yet these decisions are largely unsupervised: outcome-only rewards are
-sparse and misassign credit, rule-based rewards are noisy, and existing
-process reward models (PRMs) score \emph{reasoning steps under a fixed
-context} rather than \emph{retrieval actions that modify the context}. We
-present \ours{}, a multimodal RAG system that performs Monte Carlo Tree
-Search (MCTS) directly over a typed retrieval action space
-$\{\textsc{text\_search}, \textsc{image\_search}, \textsc{answer}\}$, guided
-by a grounded, action-typed PRM trained specifically to evaluate
-state-modifying retrieval actions. The PRM is supervised with a dual-source
-step reward that fuses (i) a \emph{local grounding} signal --- the relevance
-of each retrieved result to the question, measured in a single unified CLIP
-embedding space so that text- and image-side evidence are comparable --- and
-(ii) a \emph{tree-level outcome credit} --- the Monte Carlo success rate of
-all rollouts passing through the node --- with an additional
-\emph{answer-support gate} that prevents parametric lucky guesses from
-receiving perfect labels. The PRM is trained generatively (rationale +
-score) for dense supervision and queried score-only at inference for speed.
-To train it we construct \dataset{}, a step-level annotated dataset of
-retrieval trajectories built entirely on benchmark-provided corpora
-(InfoSeek, ScienceQA, GQA) with a five-rule rationale quality-control
-protocol that provably excludes ground-truth leakage. We report the
-experimental protocol, baselines, and ablation design on InfoSeek,
-ScienceQA, and GQA; our own results are withheld pending training
-completion.
+Multimodal retrieval-augmented generation (RAG) hinges on a sequence of
+retrieval decisions --- what to search, with which modality, and when to
+stop --- yet current systems leave these decisions unsupervised: fixed
+pipelines apply one recipe to every question, outcome-only reinforcement
+learning misassigns credit across steps, and imitation-learned agents
+cannot recover once a retrieval goes wrong. Process reward models (PRMs)
+supply exactly the missing step-level signal, but existing PRMs score
+reasoning steps under a \emph{fixed} context, an assumption that fails
+structurally in RAG where every retrieval action \emph{modifies} the
+context. We present \ours{}, which closes this gap with three coupled
+components. (1) \prm{}, a grounded, action-typed PRM for
+\emph{state-modifying retrieval actions}, supervised by a dual-source step
+reward: unified-CLIP grounding of what each action actually retrieved,
+fused with a tree-level Monte Carlo outcome credit, and hardened by an
+answer-support gate that denies perfect labels to lucky, evidence-free
+answers. The PRM is trained generatively (rationale + score) and queried
+score-only at inference. (2) A Monte Carlo Tree Search that plans directly
+over the typed action space $\{\textsc{text\_search},
+\textsc{image\_search}, \textsc{answer}\}$ with the PRM as the sole value
+signal, natively backtracking out of poisoned retrieval branches.
+(3) \dataset{}, to our knowledge the first step-level annotated dataset of multimodal
+retrieval trajectories, built reproducibly on benchmark-provided corpora
+(InfoSeek, ScienceQA, GQA) under a leakage-proof rationale protocol. We
+specify the full evaluation design against published baselines; our own
+results are withheld pending training completion.
 \end{abstract}
+
+% -------------------------------------------------------------------------
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\scriptsize, node distance=1.6mm and 2.2mm,
+  n/.style={draw,rounded corners=1.5pt,inner sep=2.3pt,align=center,font=\scriptsize},
+  bad/.style={n,fill=red!12}, good/.style={n,fill=green!14},
+  neu/.style={n,fill=blue!8}, qn/.style={n,fill=violet!10},
+  lab/.style={font=\scriptsize\bfseries},
+  a/.style={-{Stealth[length=1.5mm]},semithick}]
+% ---- (a) fixed pipeline
+\node[lab] (la) {(a)};
+\node[qn,right=1.5mm of la] (a0) {$q,I$};
+\node[neu,right=of a0] (a1) {retrieve};
+\node[neu,right=of a1] (a2) {generate};
+\node[bad,right=of a2] (a3) {answer \textcolor{red}{$\times$}};
+\draw[a] (a0)--(a1); \draw[a] (a1)--(a2); \draw[a] (a2)--(a3);
+\node[right=1mm of a3,align=left,text=gray] {one recipe\\for all $q$};
+% ---- (b) linear agent
+\node[lab,below=10mm of la.west,anchor=west] (lb) {(b)};
+\node[qn,right=1.5mm of lb] (b0) {$q,I$};
+\node[bad,right=of b0] (b1) {\textsc{search}\\bad evidence};
+\node[neu,right=of b1] (b2) {\textsc{search}\\conditioned on it};
+\node[bad,right=of b2] (b3) {answer \textcolor{red}{$\times$}};
+\draw[a] (b0)--(b1); \draw[a] (b1)--(b2); \draw[a] (b2)--(b3);
+\node[right=1mm of b3,align=left,text=gray] {no step values,\\no recovery};
+% ---- (c) ours
+\node[lab,below=19mm of lb.west,anchor=west] (lc) {(c)};
+\node[qn,right=1.5mm of lc] (c0) {$q,I$};
+\node[bad,above right=1.2mm and 5.5mm of c0] (c1) {\textsc{search}$_1$\\$Q{=}0.2$ \textcolor{red}{pruned}};
+\node[good,below right=1.2mm and 5.5mm of c0] (c2) {\textsc{search}$_2$\\$Q{=}0.8$};
+\node[good,right=of c2] (c3) {\textsc{search}$_3$\\$Q{=}0.9$};
+\node[good,right=of c3] (c4) {answer \textcolor{green!50!black}{$\checkmark$}};
+\draw[a] (c0)--(c1); \draw[a] (c0)--(c2); \draw[a] (c2)--(c3); \draw[a] (c3)--(c4);
+\draw[a,dashed,red!70] (c1.west) to[bend right=25]
+  node[above,font=\tiny,text=red!70]{backtrack} (c0.north);
+\node[right=1mm of c4,align=left,text=gray] {PRM values\\every action};
+\end{tikzpicture}
+\caption{\textbf{Three paradigms for multimodal RAG.} (a)~Fixed pipelines
+make no retrieval decisions. (b)~Linear search agents decide but cannot
+\emph{evaluate} or \emph{undo} a decision: evidence from a bad retrieval
+conditions everything downstream (88.6\% of wrong retrievals end in wrong
+answers for the linear agent of \citealt{chen2026learningtosearch}).
+(c)~\ours{} scores every candidate retrieval action with a grounded PRM
+and searches over the action tree, pruning and backtracking out of bad
+branches.}
+\label{fig:teaser}
+\end{figure}
 
 % =========================================================================
 \section{Introduction}
+\label{sec:intro}
 
-Knowledge-intensive multimodal questions --- ``When did \emph{this} building
-officially open?'', asked of a photograph --- cannot be answered from model
-parameters alone: they require retrieving external evidence, often across
-modalities \cite{chen2023infoseek,hu2023oven}. Retrieval-augmented
-generation (RAG) has therefore become the dominant paradigm for
-knowledge-based visual question answering (KB-VQA)
-\cite{caffagni2024wikillava,yan2024echosight,lin2024preflmr}. However, the
-\emph{retrieval decisions} of current systems are essentially unsupervised.
-Fixed retrieve-then-generate pipelines apply the same recipe to every
-question \cite{cocchi2025reflectiva}; reinforcement-learned search agents
-receive only outcome-level rewards, which are sparse, misassign credit
-across steps, and are known to induce process hallucination
-\cite{wu2025mmsearchr1,wang2025vragrl}; and imitation-learned decision
-agents \cite{chen2026learningtosearch} clone corrected search paths without
-ever learning to \emph{evaluate} a retrieval action --- so a single bad
-retrieval, once taken, silently corrupts everything downstream. Indeed,
-\citet{chen2026learningtosearch} report that when retrieval goes wrong,
-88.6\% of their agent's answers are wrong as well: linear agents cannot
-recover from a bad search.
+Knowledge-intensive multimodal questions --- ``When did \emph{this}
+building officially open?'', asked of a photograph --- cannot be answered
+from model parameters alone: the entity must be recognized and its
+attributes retrieved from external corpora
+\cite{chen2023infoseek,hu2023oven}. Retrieval-augmented generation (RAG)
+is the standard approach to such questions
+\cite{caffagni2024wikillava,yan2024echosight,lin2024preflmr}, and its
+frontier has been moving from fixed retrieve-then-generate pipelines
+toward \emph{agentic} systems that decide when and how to search
+\cite{wu2025mmsearchr1,chen2026learningtosearch}.
 
-Process reward models (PRMs) offer the missing supervision signal: they
-score intermediate steps rather than final outcomes
-\cite{lightman2023verify,wang2024mathshepherd}. But existing PRMs ---
-including multimodal ones \cite{visualprm2025} and grounded ones
-\cite{groundedprm2025} --- evaluate \emph{reasoning steps under a fixed
-state}: the image and context are given once and never change. This
-assumption fails structurally in RAG, where every retrieval action
-\emph{modifies} the state by appending evidence, where a step's quality
-depends on what the retrieval actually returned, and where the system must
-plan across modalities (search with text, or search with the image?). No
-existing work simultaneously (A) evaluates the local quality of retrieval
-actions with grounded signals, (B) supports backtracking when retrieval
-fails, and (C) plans across retrieval modalities.
+However, examining how these systems make their retrieval decisions
+reveals that the decisions themselves are essentially unsupervised. We
+identify three concrete challenges (Figure~\ref{fig:teaser}):
 
-\ours{} fills this gap with three tightly coupled contributions:
+\noindent\textbf{Challenge 1 --- no evaluation of individual retrieval
+actions.} Outcome-only reinforcement learning
+\cite{wu2025mmsearchr1,wang2025vragrl} rewards a whole trajectory by its
+final answer: a useless search inside a lucky trajectory is reinforced,
+and a reasonable search inside a failed one is punished; the step-level
+signal needed to tell them apart does not exist in these systems.
+Imitation-learned agents \cite{chen2026learningtosearch} clone corrected
+search paths and never learn what makes an individual action good.
+Tellingly, in the analysis of \citet{chen2026learningtosearch}, 29.6\% of
+samples retrieve the right evidence yet still answer wrongly --- retrieval
+correctness and answer correctness are far from aligned, and nothing in
+these systems can tell one step's contribution from another's.
+
+\noindent\textbf{Challenge 2 --- no recovery from failed retrieval.}
+Retrieval actions are \emph{state-modifying}: retrieved evidence is
+appended to the context and conditions every subsequent decision. In a
+linear agent a single bad retrieval therefore poisons the remainder of the
+trajectory --- 88.6\% of the wrong-retrieval cases of
+\citet{chen2026learningtosearch} end in wrong answers --- yet none of the
+existing multimodal search agents can back out of a branch once taken.
+
+\noindent\textbf{Challenge 3 --- cross-modal planning is implicit.}
+Whether to search with the \emph{image} (to disambiguate an unnamed
+entity) or with \emph{text} (to fetch an attribute of a known entity) is a
+planning decision that current systems leave to prompt heuristics.
+
+A natural remedy for Challenge~1 is a process reward model (PRM), which
+scores intermediate steps rather than outcomes
+\cite{lightman2023verify,wang2024mathshepherd}. But transplanting existing
+PRMs fails for a structural reason: multimodal PRMs \cite{visualprm2025}
+and grounded PRMs \cite{groundedprm2025} evaluate \emph{reasoning steps
+under a fixed state} --- the image and context are given once and never
+change --- whereas in RAG the very object to be evaluated is an action
+that \emph{changes} the state, whose quality depends on what it actually
+\emph{returned}, and whose alternatives live on other branches of a search
+tree. No existing work simultaneously provides (i) grounded evaluation of
+retrieval actions, (ii) backtracking search over them, and (iii)
+cross-modal retrieval planning.
+
+\ours{} is designed around this gap: one component per challenge, plus
+the dataset that makes the first component trainable:
 
 \begin{itemize}
-\item \textbf{An action-typed, grounded PRM for retrieval actions
-(\prm{}).} The PRM scores candidate retrieval actions conditioned on the
-question, the image, and the accumulated evidence bundle. Its training
-labels fuse a graded \emph{local grounding} signal --- computed in one
-unified CLIP space so text- and image-side results are on a comparable
-scale --- with a \emph{tree-level outcome credit} that estimates each
-node's true success potential by Monte Carlo, and an \emph{answer-support
-gate} that blocks ``correct but evidence-free'' answers from receiving
-perfect labels. The PRM is trained \emph{generatively} (rationale + score)
-for dense supervision and anti-reward-hacking, and queried
-\emph{score-only} at inference.
-\item \textbf{Retrieval-action MCTS.} We build the search tree directly
-over retrieval actions: nodes are partial contexts $(q, I, \mathcal{E})$,
-edges are typed retrieval actions, and selection follows standard UCB1
-with the PRM's value as the sole quality signal. Because the tree branches
-over \emph{actions}, the system natively supports backtracking out of
-failed retrieval branches --- the failure mode that linear agents cannot
-escape --- and cross-modal planning arises from the PRM's learned
-preference for image-based entity disambiguation followed by text-based
-attribute lookup.
-\item \textbf{\dataset{}.} A step-level annotated dataset of multimodal
-retrieval trajectories (target 50--80K trajectories, $\sim$300K step
-labels) constructed entirely on benchmark-provided corpora --- no live web
-APIs, hence fully reproducible --- with a five-rule rationale
-quality-control protocol that excludes ground-truth leakage by
-construction. To our knowledge no existing dataset provides step-level
-supervision for \emph{multimodal retrieval actions}: RAG-ProGuide
-\cite{zhang2025reasonrag} is text-only, and DeepMMSearchVQA
-\cite{deepmmsearch2025} provides trajectories without step-level labels.
+\item \textbf{\prm{}: a grounded, action-typed PRM for retrieval actions}
+(Challenge 1). It scores a candidate action conditioned on the question,
+image, and accumulated evidence. Training labels fuse a graded
+\emph{local grounding} signal --- relevance of the action's
+\emph{retrieved results} to the question, measured in one unified CLIP
+space so text- and image-side evidence are comparable --- with a
+\emph{tree-level outcome credit}, the Monte Carlo success rate of all
+rollouts through the node. An \emph{answer-support gate} denies perfect
+labels to answers that are correct but unsupported by any evidence
+(parametric lucky guesses). The PRM is trained \emph{generatively}
+(rationale + score) for dense supervision and queried \emph{score-only}
+at inference.
+\item \textbf{MCTS over the retrieval action space} (Challenge 2). Nodes
+are partial contexts $(q, I, \mathcal{E})$; edges are typed retrieval
+actions; selection is standard UCB1 with the PRM's value as the sole
+quality signal. Because the tree branches over \emph{actions}, abandoning
+a poisoned branch is a first-class operation rather than an impossibility.
+\item \textbf{A unified cross-modal action space} (Challenge 3). Both
+search actions query one CLIP-indexed corpus; the
+disambiguate-then-look-up chain (\textsc{image\_search} names the entity,
+\textsc{text\_search} fetches its attribute) is expressible as two edges
+of the same tree, and preferring it is learned by the PRM rather than
+hard-coded.
+\item \textbf{\dataset{}.} Training such a PRM requires supervision that
+does not exist: VisualPRM400K \cite{visualprm2025} contains almost no
+retrieval actions, RAG-ProGuide \cite{zhang2025reasonrag} is text-only,
+and DeepMMSearchVQA \cite{deepmmsearch2025} has no step labels. We
+therefore construct \dataset{}, a step-level annotated dataset of
+multimodal retrieval trajectories (target 50--80K trajectories with
+150--300K step labels, depending on realized trajectory depth) built
+entirely on benchmark-provided corpora ---
+no live web APIs, hence reproducible end to end --- under a five-rule
+rationale quality-control protocol that excludes ground-truth leakage by
+construction.
 \end{itemize}
 
-We position \ours{} against the closest prior systems in
-Section~\ref{sec:related}, detail the method in
-Section~\ref{sec:method}, describe the dataset construction protocol in
-Section~\ref{sec:dataset}, and lay out the complete experimental design ---
-benchmarks, baselines with their published numbers, metrics, and ablations
---- in Section~\ref{sec:experiments}. Our own numbers are deliberately
-withheld (marked ``\NA'') pending completion of PRM training; every
-baseline number in our tables is quoted from the original publication
-cited in the caption.
+Section~\ref{sec:related} positions \ours{} against prior systems;
+Sections~\ref{sec:method} and \ref{sec:dataset} present the method and the
+dataset; Section~\ref{sec:experiments} lays out the complete experimental
+design --- benchmarks, baselines with their published numbers, and a
+pre-registered ablation grid. Our own numbers are deliberately withheld
+(marked ``\NA'') pending completion of PRM training; every baseline number
+we print is quoted from the original publication cited in the caption.
 
 % -------------------------------------------------------------------------
 \begin{figure*}[t]
 \centering
+\resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[
   font=\small,
-  node distance=4mm and 7mm,
-  box/.style={draw,rounded corners=2pt,align=center,inner sep=4pt,minimum height=7mm},
-  state/.style={box,fill=blue!8},
-  act/.style={box,fill=orange!15},
+  box/.style={draw,rounded corners=2pt,align=center,inner sep=3pt,minimum height=6mm},
+  state/.style={box,fill=blue!8,font=\scriptsize},
+  act/.style={font=\tiny,midway,fill=white,inner sep=1pt,align=center},
   prmbox/.style={box,fill=green!12,thick},
-  corpus/.style={cylinder,shape border rotate=90,draw,aspect=0.15,align=center,
-                 inner sep=3pt,fill=gray!10,minimum height=11mm},
+  corpus/.style={cylinder,shape border rotate=90,draw,aspect=0.12,align=center,
+                 inner sep=2.5pt,fill=gray!10,minimum height=9mm,font=\tiny},
   arr/.style={-{Stealth[length=2mm]},thick},
+  qarr/.style={-{Stealth[length=1.6mm]},green!50!black,semithick},
 ]
-% ----- left: query
-\node[box,fill=violet!8] (query) {$q$: ``When did this building\\officially open?''\\$I$: \emph{(query image)}};
-% ----- tree
-\node[state,right=9mm of query] (root) {$s_0$\\$\mathcal{E}=\varnothing$};
-\node[state,above right=2mm and 12mm of root] (s1) {$s_1$\\$\mathcal{E}=\{e_0\}$};
-\node[state,below right=2mm and 12mm of root] (s2) {$s_2$\\$\mathcal{E}=\{e_1\}$};
-\node[state,right=12mm of s1] (s3) {$s_3$\\$\mathcal{E}=\{e_0,e_2\}$};
-\node[act,right=11mm of s3,fill=red!12] (ans) {\textsc{answer}\\``Sept.\ 7, 1963''};
-\draw[arr] (query) -- (root);
-\draw[arr] (root) -- node[above,sloped,font=\scriptsize]{\textsc{text\_search}} (s1);
-\draw[arr] (root) -- node[below,sloped,font=\scriptsize]{\textsc{image\_search}} (s2);
-\draw[arr] (s1) -- node[above,sloped,font=\scriptsize]{\textsc{image\_search}} (s3);
+% =================== PANEL (a): inference ===================
+\node[box,fill=violet!10,align=left,font=\scriptsize,text width=27mm] (query) at (0,0)
+  {$q$: ``When did this building officially open?''\\
+   $I$: photo of an unnamed museum building};
+\node[state,right=6mm of query] (s0) {$s_0$: $\mathcal{E}_0{=}\varnothing$};
+\draw[arr] (query) -- (s0);
+% branch 1 (bad): guessed text_search, pruned
+\node[state,above right=5mm and 9mm of s0,fill=red!8] (s1)
+  {$s_1$: $\mathcal{E}{=}\{e_1\}$ off-topic};
+\draw[arr] (s0) -- node[act]{\textsc{text\_search}\\$Q{=}0.21$} (s1);
+\node[font=\tiny,text=red!70,above=0.5mm of s1,align=center] (prun)
+  {low grounding $\Rightarrow$ pruned};
+\draw[arr,dashed,red!70] (s1.west) to[bend right=20]
+  node[above,sloped,font=\tiny,text=red!70]{backtrack} (s0.north);
+% branch 2 (good): image_search disambiguates entity
+\node[state,below right=5mm and 9mm of s0] (s2)
+  {$s_2$: $\mathcal{E}{=}\{e_2\}$, entity page\\``Pro Football Hall of Fame''};
+\draw[arr] (s0) -- node[act]{\textsc{image\_search}\\$Q{=}0.78$} (s2);
+% follow-up text_search fetches the attribute
+\node[state,right=17mm of s2] (s3)
+  {$s_3$: $\mathcal{E}{=}\{e_2,e_3\}$, page $+$\\opening-date passage};
+\draw[arr] (s2) -- node[act]{\textsc{text\_search}\\$Q{=}0.85$} (s3);
+% answer
+\node[box,fill=green!14,right=8mm of s3,font=\scriptsize] (ans)
+  {\textsc{answer} $Q{=}0.91$\\``Sept.\ 7, 1963'' \textcolor{green!50!black}{$\checkmark$}};
 \draw[arr] (s3) -- (ans);
-\draw[arr,dashed,red!70] (s2) to[bend right=18] node[below,font=\scriptsize,red!70]{backtrack (low $Q$)} (root);
-% ----- corpus
-\node[corpus,below=9mm of root] (corp) {unified CLIP corpus\\(text + image docs)};
-\draw[arr,<->] (root) -- (corp);
-\draw[arr,<->] (s2.south) to[bend left=10] (corp);
-% ----- PRM
-\node[prmbox,above=8mm of s1,xshift=8mm] (prm) {\prm{} (frozen at inference)\\$Q(a\,|\,s)\leftarrow$ score-only head};
-\draw[arr,green!50!black] (prm.south) to[bend right=12] node[left,font=\scriptsize]{$Q$} (s1.north);
-\draw[arr,green!50!black] (prm.south) to[bend left=14] node[right,font=\scriptsize]{$Q$} (s3.north);
-% ----- UCB label
-\node[below=8mm of ans,font=\scriptsize,align=center]
-  {selection: $\;Q(a) + c\sqrt{\ln N(s)/N(s,a)}$};
-% ----- training side
-\begin{scope}[on background layer]
-\node[fit=(root)(s1)(s2)(s3)(ans),draw=gray!60,dashed,rounded corners,inner sep=5pt,
-      label={[gray,font=\scriptsize]south east:MCTS over retrieval actions}] {};
-\end{scope}
-\node[box,fill=yellow!15,right=8mm of ans,align=left,font=\scriptsize] (label)
-  {dual-source step labels\\
-   $g$: unified-CLIP grounding\\
-   $R_\mathrm{out}$: tree-level credit\\
-   $\mathrm{supp}$: answer-support gate\\[1pt]
-   $\Rightarrow$ generative PRM training\\(rationale + score)};
-\draw[arr,gray] (label) to[bend right=25] (prm.east);
-\end{tikzpicture}
-\caption{\textbf{\ours{} overview.} The search tree is built over
-\emph{typed retrieval actions}; each edge executes a retrieval against the
-benchmark-provided corpus (indexed in one unified CLIP space) and appends
-the results to the evidence bundle $\mathcal{E}$. A grounded, action-typed
-PRM provides the exploitation term $Q$ of UCB1 selection; low-$Q$ branches
-are abandoned (backtracking). Training labels (right) fuse local grounding,
-tree-level Monte Carlo outcome credit, and an answer-support gate, and the
-PRM is trained generatively on \dataset{}.}
+% corpus
+\node[corpus,below=11mm of s0,xshift=1mm] (corp)
+  {unified CLIP corpus\\(text $+$ image docs)};
+\draw[arr,<->,gray] (s0.south) to[bend right=8] (corp.north);
+\draw[arr,<->,gray] (s2.south west) to[bend left=8] (corp.east);
+% PRM
+\node[prmbox,above=9mm of s3,font=\scriptsize,align=center] (prm)
+  {\prm{} (frozen at inference)\\score-only head $\rightarrow Q_{\phi}(a \mid s)$};
+\draw[qarr] (prm.south west) to[bend right=6] (s2.north);
+\draw[qarr] (prm.south) -- (s3.north);
+% phase loop
+\node[font=\scriptsize\itshape,text=gray!90!black,below=1.5mm of corp,xshift=24mm] (phase)
+  {\textbf{loop:} select (UCB1, Eq.~\ref{eq:ucb}) $\to$ expand (policy proposes typed actions) $\to$ simulate $\to$ backup};
+% =================== PANEL (b): training (horizontal row below) ===================
+\node[box,fill=yellow!12,align=left,font=\scriptsize,text width=35mm,
+      anchor=north west] (roll) at ([yshift=-8mm]query.west |- phase.south)
+  {\textbf{1. Rollouts.} Training-free policy runs MCTS per query; \emph{all}
+   trajectories kept (successes and failures).};
+\node[box,fill=yellow!12,align=left,font=\scriptsize,right=3.5mm of roll,text width=43mm] (lab)
+  {\textbf{2. Step labels} (Eqs.~\ref{eq:grounding}--\ref{eq:support}):
+   $g$ unified-CLIP grounding; $R_{\mathrm{out}}$ tree-level MC credit;
+   $\mathrm{supp}$ answer-support gate.};
+\node[box,fill=yellow!12,align=left,font=\scriptsize,right=3.5mm of lab,text width=33mm] (rat)
+  {\textbf{3. Rationales} (strong LLM) under leakage-proof QC (5 rules).};
+\node[box,fill=green!12,align=left,font=\scriptsize,right=3.5mm of rat,text width=37mm] (train)
+  {\textbf{4. \prm{} training:} generative SFT $\to$ same-state DPO $\to$ calibration; deployed as the value
+   oracle in (a).};
+\draw[arr] (roll)--(lab); \draw[arr] (lab)--(rat); \draw[arr] (rat)--(train);
+% panel frames (drawn last, border only)
+\node[fit=(query)(s1)(s2)(s3)(ans)(corp)(prm)(phase)(prun),draw=gray!50,dashed,rounded corners,
+      inner sep=3pt,label={[gray,font=\small\bfseries]north west:(a) Inference: PRM-guided MCTS over retrieval actions}] {};
+\node[fit=(roll)(lab)(rat)(train),draw=gray!50,dashed,rounded corners,inner sep=3pt,
+      label={[gray,font=\small\bfseries,yshift=1mm]south west:(b) Training (\dataset{})}] {};
+\end{tikzpicture}}
+
+
+\caption{\textbf{\ours{} overview.} \textbf{(a)}~The search tree lives in
+the \emph{retrieval action space}: every edge is a typed action executed
+against the benchmark-provided corpus (one unified CLIP index for text and
+image documents), and every node is the resulting evidence state. The
+example illustrates the intended cross-modal plan on an entity question
+(the $Q$ values are illustrative, not measured): a
+guessed \textsc{text\_search} retrieves off-topic evidence and is pruned
+by its low PRM value ($Q{=}0.21$); \textsc{image\_search} disambiguates
+the entity ($Q{=}0.78$); a follow-up \textsc{text\_search} on the
+evidence-established name fetches the asked attribute ($Q{=}0.85$); the
+\textsc{answer} edge closes the trajectory. UCB1 selection
+(Eq.~\ref{eq:ucb}) uses the PRM value as the only quality signal, so
+low-$Q$ branches are abandoned --- backtracking is a first-class
+operation. \textbf{(b)}~The PRM is trained on \dataset{}: MCTS rollouts
+are labeled per step with dual-source rewards and an answer-support gate,
+paired with QC-filtered rationales, and distilled into \prm{} by
+generative SFT, same-state preference optimization, and calibration.}
 \label{fig:overview}
 \end{figure*}
 
@@ -223,10 +342,11 @@ PRM is trained generatively on \dataset{}.}
 \label{sec:related}
 
 \paragraph{Tree search for multimodal RAG.}
-RCTS \cite{rcts2025} performs MCTS over \emph{sets of retrieved
-examples} to re-rank in-context demonstrations: the search happens after
-retrieval, over a flat list of already-retrieved pairs, with rule-based
-answer-matching rewards. AR-MCTS \cite{dong2025armcts} searches in
+RCTS \cite{rcts2025} enriches its knowledge base with self-consistent
+reasoning contexts and performs MCTS with heuristic answer rewards to
+re-rank \emph{retrieved examples} as in-context demonstrations: the
+search orders already-retrieved context rather than deciding what to
+retrieve. AR-MCTS \cite{dong2025armcts} searches in
 \emph{reasoning space}, using retrieval only to diversify expansion, and
 trains a PRM over reasoning steps. \ours{} differs from both in \emph{where
 the tree lives}: our nodes are partial retrieval contexts and our edges are
@@ -272,19 +392,19 @@ rule-constructed trajectories. All of these are \emph{linear} policies
 learned by imitation or outcome-only RL: they neither estimate step values
 nor backtrack. \ours{} is complementary --- it learns to \emph{evaluate}
 retrieval actions and to \emph{plan} over them, keeping the policy
-training-free; DBAgent's own analysis (29.6\% of its samples have correct
-retrieval but wrong answers, and 88.6\% of wrong retrievals end in wrong
-answers) is direct evidence for the value of step-level evaluation with
-backtracking.
+training-free; DBAgent's own error analysis (Section~\ref{sec:intro}) documents
+precisely the failure modes that step-level evaluation with backtracking
+targets.
 
 \paragraph{Step-level datasets.}
 VisualPRM400K \cite{visualprm2025} contains almost exclusively mathematical
 reasoning steps; RAG-ProGuide \cite{zhang2025reasonrag} provides 13K
 process preference pairs for text-only RAG; DeepMMSearchVQA
 \cite{deepmmsearch2025} provides multimodal search trajectories without
-step labels. \dataset{} is, to our knowledge, the first step-level
-annotated dataset of \emph{multimodal retrieval actions}, roughly an order
-of magnitude larger than RAG-ProGuide at target scale.
+step labels. \dataset{} is, to our knowledge, the first step-level annotated dataset
+of \emph{multimodal retrieval actions}; at target scale it is designed to
+provide an order of magnitude more step-level labels than RAG-ProGuide's
+13K preference pairs.
 
 % =========================================================================
 \section{Method}
@@ -312,9 +432,10 @@ probability that $y$ matches the gold answer $y^{*}$, under a fixed rollout
 budget. Unlike reasoning-step search
 \cite{dong2025armcts,visualprm2025}, every non-terminal action here is
 \emph{state-modifying} and \emph{irreversible within its branch}: evidence,
-once retrieved, conditions all subsequent decisions on that path. Tree
-search provides the escape hatch --- a branch poisoned by a bad retrieval
-can be abandoned rather than conditioned on.
+once retrieved, conditions all subsequent decisions on that path
+(Challenge~2). Tree search provides the escape hatch --- a branch poisoned
+by a bad retrieval can be abandoned rather than conditioned on. Notation is summarized in
+Appendix~\ref{app:notation}.
 
 \subsection{Retrieval Action Space}
 \label{sec:actions}
@@ -322,35 +443,41 @@ can be abandoned rather than conditioned on.
 We type actions by the \emph{modality of the retrieval query}, not of the
 result:
 \begin{equation}
-\mathcal{A} = \{\, \textsc{text\_search}(x),\;
-                   \textsc{image\_search}(I),\;
-                   \textsc{answer}(y) \,\}.
+\small
+\mathcal{A} = \{\textsc{text\_search}(x),
+\textsc{image\_search}(I),
+\textsc{answer}(y)\}.
 \label{eq:actions}
 \end{equation}
 Both search actions query the \emph{same} unified index: every corpus
 document --- text chunk or image --- is embedded with one CLIP model
 \cite{radford2021clip}, so a text query or an image query retrieves
-whichever side of the corpus is most similar. This yields the key
-multimodal capability: for entity questions where the entity is not named
-in $q$ (``this bird'', ``this building''), \textsc{image\_search} matches
-the query image against the corpus to \emph{disambiguate the entity}, after
-which \textsc{text\_search} retrieves the asked attribute using the
-evidence-established entity name. We deliberately do not type actions by
-result modality (a $2{\times}2$ split dilutes the visit counts of each
-branch under small rollout budgets, and the retriever already decides
-result modality by similarity), do not include compound parallel-search
-actions (tree expansion already provides multi-candidate exploration, and
-multi-source fusion is expressible as a serial trajectory), and do not
-include state-invariant actions such as captioning (an edge that does not
-change the observable state would receive no grounding signal and dilute
-tree-level credit; captioning is folded into the policy prompt instead).
-Appendix~\ref{app:actions} details these choices.
+whichever side of the corpus is most similar. This addresses Challenge~3
+structurally rather than heuristically: for entity questions where the
+entity is not named in $q$ (``this bird'', ``this building''),
+\textsc{image\_search} matches the query image against the corpus to
+\emph{disambiguate the entity}, after which \textsc{text\_search} retrieves
+the asked attribute using the evidence-established entity name
+(Figure~\ref{fig:overview}a) --- and \emph{whether} to prefer this chain on
+a given state is learned by the PRM, not hard-coded. We deliberately do not
+type actions by result modality (a $2{\times}2$ split dilutes the visit
+counts of each branch under small rollout budgets, and the retriever
+already decides result modality by similarity), do not include compound
+parallel-search actions (tree expansion already provides multi-candidate
+exploration, and multi-source fusion is expressible as a serial
+trajectory), and do not include state-invariant actions such as captioning
+(an edge that does not change the observable state would receive no
+grounding signal and dilute tree-level credit; captioning is folded into
+the policy prompt instead). Appendix~\ref{app:actions} details these
+choices.
 
 \subsection{Dual-Source Step Reward}
 \label{sec:reward}
 
-Each step of a trajectory receives a graded label in $[0,1]$ fusing two
-complementary signals.
+Addressing Challenge~1 requires a per-step label that neither trusts the
+outcome blindly (credit misassignment) nor ignores it (retrieval relevance
+alone does not imply usefulness). Each step of a trajectory therefore
+receives a graded label in $[0,1]$ fusing two complementary signals.
 
 \paragraph{Local grounding.}
 Grounding measures \emph{how relevant the results retrieved by this step
@@ -407,17 +534,18 @@ R(s_t, a_t) \;=\; \alpha\, g(a_t, s_t) + (1-\alpha)\, R_\mathrm{out}(s_t, a_t),
 with $\alpha = 0.5$ by default (sensitivity in
 Section~\ref{sec:ablations}). Terminal \textsc{answer} steps have no
 retrieval result to ground, and labeling them by outcome alone creates a
-subtle poison: a \emph{parametric lucky guess} --- an answer that happens
-to be correct although nothing in the evidence supports it --- would
-receive a perfect label, teaching the PRM that evidence-free answering is
-optimal. We therefore gate the outcome by an \emph{answer-support} verdict
-$\mathrm{supp}(y, \mathcal{E}_T) \in [0,1]$, judged by an LLM over the
-accumulated evidence (four-way rubric:
+subtle poison that we observed directly in our construction pilot
+(Appendix~\ref{app:cases}, Case~2): a \emph{parametric lucky guess} --- an
+answer that happens to be correct although nothing in the evidence
+supports it --- would receive a perfect label, teaching the PRM that
+evidence-free answering is optimal. We therefore gate the outcome by an
+\emph{answer-support} verdict $\mathrm{supp}(y, \mathcal{E}_T) \in [0,1]$,
+judged by an LLM over the accumulated evidence (four-way rubric:
 \textsc{supported}/\textsc{partial}/\textsc{unsupported} $\mapsto$
 $1/0.5/0$, plus \textsc{not\_required} $\mapsto$ no gating for questions
 answerable from the question and image alone by perception or logic ---
 entailment-gating those would systematically punish correct reasoning
-answers; Appendix~\ref{app:support}):
+answers; Appendix~\ref{app:support} and Case~3):
 \begin{equation}
 R_\mathrm{ans}(s_T) \;=\; R_\mathrm{out}(s_T, a_T)\cdot
 \big( \gamma + (1-\gamma)\,\mathrm{supp}(y, \mathcal{E}_T) \big),
@@ -438,9 +566,9 @@ Correct-but-unsupported answers are additionally flagged --- not discarded
 \prm{} is initialized from VisualPRM-8B \cite{visualprm2025} (itself built
 on InternVL2.5-8B \cite{chen2024internvl}), inheriting multimodal
 inductive biases, with an action-conditional value readout. The input
-serializes the state and the candidate action:
-question and image, the evidence bundle, and the candidate action's type
-and parameters; the output is a rationale followed by a score token.
+serializes the state and the candidate action: question and image, the
+evidence bundle, and the candidate action's type and parameters; the
+output is a rationale followed by a score token.
 
 \paragraph{Generative training, score-only inference.}
 Following the generative reward modeling paradigm
@@ -479,15 +607,15 @@ a^{\dagger} = \arg\max_{a}\;
 Q(a \mid s) \;+\; c\, \sqrt{ \frac{\ln N(s)}{N(s, a)} },
 \label{eq:ucb}
 \end{equation}
-where $Q$ is the running mean of backed-up rewards seeded by the PRM prior
-for unvisited edges, and $c = 1.0$ by default. We use \emph{no} additional
+where $Q$ is the running mean of backed-up rewards, seeded for unvisited
+edges by the PRM prior $Q_{\phi}(a \mid s)$, and $c = 1.0$ by default. We use \emph{no} additional
 novelty or modality-coverage bonus: the PRM's $Q$ is the sole quality
 signal, and hard-coded exploration preferences would both dilute it and add
 tuning burden (Appendix~\ref{app:actions}). \emph{Expansion} asks a
 training-free policy VLM to propose candidate actions (with
 anti-fabrication and retrieval-chain constraints in the prompt;
 Appendix~\ref{app:prompts}), executes them against the local index, and
-keeps the top-$k$ by PRM prior. \emph{Simulation} rolls out greedily to a
+keeps the top-$k$ by the PRM prior $Q_{\phi}$. \emph{Simulation} rolls out greedily to a
 forced answer at depth $d_{\max}$. \emph{Backup} propagates the trajectory
 reward to the root. Search stops early when the best root path exceeds a
 quality threshold, or when the rollout budget $P$ is exhausted (defaults:
@@ -503,10 +631,10 @@ the loop.
 \For{$t = 1 \dots P$}
   \State $s \gets$ \textsc{Select}(root) by Eq.~\eqref{eq:ucb}
   \State $\mathcal{A}_c \gets$ policy proposals at $s$; execute retrievals
-  \State keep top-$k$ children of $s$ by PRM prior $Q(a \mid s)$
+  \State keep top-$k$ children of $s$ by PRM prior $Q_{\phi}(a \mid s)$
   \State $\tau \gets$ \textsc{Simulate} greedily to \textsc{answer} or $d_{\max}$
   \State \textsc{Backup}$(\tau, R_\mathrm{PRM}(\tau))$
-  \If{$\max_{\tau} R_\mathrm{PRM}(\tau) > \tau_{\mathrm{stop}}$} \textbf{break}
+  \If{$\max_{\tau} R_\mathrm{PRM}(\tau) > \eta_{\mathrm{stop}}$} \textbf{break}
   \EndIf
 \EndFor
 \State \Return answer of the highest-value root path
@@ -517,39 +645,8 @@ the loop.
 \section{The \dataset{} Dataset}
 \label{sec:dataset}
 
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}[
-  font=\scriptsize, node distance=3.5mm,
-  stage/.style={draw,rounded corners=2pt,align=left,inner sep=3.5pt,
-               fill=blue!6,text width=0.86\linewidth},
-  arr/.style={-{Stealth[length=1.6mm]},thick},
-]
-\node[stage] (s1) {\textbf{Step 1 — Rollout.} Training-free policy VLM runs
-MCTS ($P{=}10$, early stop off) on each query against the local unified
-CLIP index; \emph{all} trajectories kept (dedup identical action
-sequences).};
-\node[stage,below=of s1] (s2) {\textbf{Step 2 — Step labels.} Per step:
-unified-CLIP grounding $g$ (Eq.~\ref{eq:grounding}); tree-level credit
-$R_\mathrm{out}$ (Eq.~\ref{eq:credit}); answer-support gate
-(Eq.~\ref{eq:support}); fused score (Eq.~\ref{eq:fusion}).};
-\node[stage,below=of s2] (s3) {\textbf{Step 3 — Rationales.} Strong LLM
-writes a rationale + \texttt{VERDICT} explaining each score; regenerated
-up to 3$\times$ on QC failure.};
-\node[stage,below=of s3] (s4) {\textbf{Step 4 — QC + split.} Drop rules:
-trajectory length $\notin[2,8]$; $|g - R_\mathrm{out}| > 0.7$ (label
-noise); rationale QC failure. Query-disjoint train/val split.};
-\draw[arr] (s1) -- (s2); \draw[arr] (s2) -- (s3); \draw[arr] (s3) -- (s4);
-\end{tikzpicture}
-\caption{\textbf{\dataset{} construction pipeline.} Retrieval is fully
-offline (local indices over benchmark-provided corpora); the only external
-API is the one-time rationale/support judging, whose outputs ship with the
-dataset --- the construction is reproducible end to end.}
-\label{fig:pipeline}
-\end{figure}
-
-\dataset{} is built by the four-step pipeline of
-Figure~\ref{fig:pipeline}, entirely on corpora that ship with the
+\dataset{} is built by a four-step pipeline
+(Figure~\ref{fig:overview}b), entirely on corpora that ship with the
 benchmarks: a Wikipedia entity corpus for InfoSeek (chunked full pages of
 the 1{,}794 validation entities), the lecture/context corpus for
 ScienceQA, and scene-graph-derived textual documents paired with images
@@ -557,7 +654,16 @@ for GQA. This design has three consequences we consider essential for a
 paper about \emph{decision quality}: reproducibility (no live-web drift),
 causal cleanliness (performance differences cannot be explained by ``the
 web changed''), and auditability (every evidence item in every label is a
-corpus document with a stable identifier).
+corpus document with a stable identifier). \emph{Step 1 (rollout)} runs
+the training-free policy through MCTS with early stopping disabled, so the
+tree branches widely; all deduplicated trajectories are kept --- failures
+included, since low-scored steps are the PRM's negative curriculum.
+\emph{Step 2 (labels)} computes Eqs.~\eqref{eq:grounding}--\eqref{eq:support}
+per step. \emph{Step 3 (rationales)} has a strong LLM explain each score.
+\emph{Step 4 (QC)} applies the only three drop rules --- trajectory length
+outside $[2,8]$, grounding--outcome self-contradiction
+($|g - R_\mathrm{out}| > 0.7$), and rationale QC failure --- and splits
+train/validation by query so no question leaks across splits.
 
 \paragraph{Rationale quality control.}
 Generative PRM training is only as good as its rationales. Each rationale
@@ -572,15 +678,17 @@ knowing it without evidence is leakage --- rationales must argue
 (preventing say-one-thing-score-another training pairs). Rules (d)/(e)
 adapt the trajectory-realism constraints of
 \citet{chen2026learningtosearch} from policy imitation to reward-model
-supervision.
+supervision. Full prompts are given in Appendix~\ref{app:prompts}.
 
 \paragraph{Scale and status.}
-Target scale is 50--80K trajectories ($\sim$300K step labels) across the
-three benchmarks. Construction statistics of a completed 100-query-per-%
+Target scale is 50--80K trajectories (150--300K step labels, depending on
+the trajectory depths realized after the retrieval-chain fixes of
+Appendix~\ref{app:pilot}) across the three benchmarks. Construction statistics of a completed 100-query-per-%
 benchmark pilot --- including the step-label and support-verdict
 distributions that motivated the support gate --- are reported in
-Appendix~\ref{app:pilot}. Full-scale construction and PRM training are in
-progress; accordingly, all \ours{} result cells in
+Appendix~\ref{app:pilot}, and worked success/failure cases from the pilot
+in Appendix~\ref{app:cases}. Full-scale construction and PRM training are
+in progress; accordingly, all \ours{} result cells in
 Section~\ref{sec:experiments} are marked ``\NA''.
 
 % =========================================================================
@@ -663,10 +771,18 @@ VisualPRM-8B + BoN$^\ddagger$ & Qwen2.5-VL-7B & \NA & \NA & \NA \\
 \bottomrule
 \end{tabular}
 \caption{\textbf{InfoSeek} (validation, official relaxed accuracy).
-Baseline numbers are quoted from the cited papers%
- (BLIP-2/InstructBLIP from the official evaluation kit of \citealt{chen2023infoseek}; Wiki-LLaVA and LLaVA-1.5 from \citealt{caffagni2024wikillava}, Table~2; EchoSight from \citealt{yan2024echosight}; PreFLMR from \citealt{lin2024preflmr}, Table~7, whose authors note a pre-release InfoSeek setup; RoRA-VLM from \citealt{qi2024roravlm}; ReflectiVA from \citealt{cocchi2025reflectiva}; Wiki-PRF from \citealt{hong2025wikiprf}; Wiki-R1 from \citealt{wikir12026}, unseen-entity split not reported; DBAgent (SFT on InfoSeek trajectories) from \citealt{chen2026learningtosearch}, Table~1. $\S$: zero-shot numbers as compiled in \citealt{chen2026learningtosearch}, Table~1.)
-. $\ddagger$: control we run under the identical corpus protocol. ``\NA'':
-training in progress.}
+Baseline numbers are quoted from the cited papers (BLIP-2/InstructBLIP
+from the official evaluation kit of \citealt{chen2023infoseek}; Wiki-LLaVA
+and LLaVA-1.5 from \citealt{caffagni2024wikillava}, Table~2; EchoSight
+from \citealt{yan2024echosight}; PreFLMR from \citealt{lin2024preflmr},
+Table~7, whose authors note a pre-release InfoSeek setup; RoRA-VLM from
+\citealt{qi2024roravlm}; ReflectiVA from \citealt{cocchi2025reflectiva};
+Wiki-PRF from \citealt{hong2025wikiprf}; Wiki-R1 from
+\citealt{wikir12026}, unseen-entity split not reported; DBAgent (SFT on
+InfoSeek trajectories) from \citealt{chen2026learningtosearch}, Table~1.
+$\S$: zero-shot numbers as compiled in \citealt{chen2026learningtosearch},
+Table~1.) $\ddagger$: control we run under the identical corpus protocol.
+``\NA'': training in progress.}
 \label{tab:infoseek}
 \end{table}
 
@@ -691,9 +807,12 @@ VisualPRM-8B + BoN$^\ddagger$ & Qwen2.5-VL-7B & \NA \\
 \bottomrule
 \end{tabular}
 \caption{\textbf{ScienceQA} (test accuracy). Baseline numbers quoted from
-the cited papers%
- (MM-CoT from \citealt{zhang2023mmcot}; LLaVA from \citealt{liu2023visualinstruction}, Table~7; $\dagger$: as measured in the RCTS paper \citealt{rcts2025} under its evaluation protocol; RCTS from the same table. AR-MCTS \citealt{dong2025armcts} does not evaluate on ScienceQA; methods reporting only the IMG subset, e.g.\ LLaVA-1.5 at 66.8, are omitted for protocol consistency.)
-.}
+the cited papers (MM-CoT from \citealt{zhang2023mmcot}; LLaVA from
+\citealt{liu2023visualinstruction}, Table~7; $\dagger$: as measured in the
+RCTS paper \citealt{rcts2025} under its evaluation protocol; RCTS from the
+same table. AR-MCTS \citealt{dong2025armcts} does not evaluate on
+ScienceQA; methods reporting only the IMG subset, e.g.\ LLaVA-1.5 at 66.8,
+are omitted for protocol consistency.)}
 \label{tab:scienceqa}
 \end{table}
 
@@ -714,28 +833,32 @@ LLaVA-1.5 \cite{liu2024llava15} & Vicuna-13B & \best{63.3} \\
 \ours{} (ours) & Qwen2.5-VL-7B & \NA \\
 \bottomrule
 \end{tabular}
-\caption{\textbf{GQA} (test-dev balanced accuracy). Baseline numbers quoted
-from the cited papers%
- (Qwen-VL rows from \citealt{bai2023qwenvl}; LLaVA-1.5 and InstructBLIP from \citealt{liu2024llava15} and \citealt{dai2023instructblip}; $\ast$: zero-shot number as reported in \citealt{liu2024llava15}, Table~1. Existing multimodal RAG and tree-search systems do not report GQA; we include it to probe perception-evidence retrieval over a scene-graph corpus, not as an open-domain RAG battlefield.)
-.}
+\caption{\textbf{GQA} (test-dev balanced accuracy). Baseline numbers
+quoted from the cited papers (Qwen-VL rows from \citealt{bai2023qwenvl};
+LLaVA-1.5 and InstructBLIP from \citealt{liu2024llava15} and
+\citealt{dai2023instructblip}; $\ast$: zero-shot number as reported in
+\citealt{liu2024llava15}, Table~1. Existing multimodal RAG and tree-search
+systems do not report GQA; we include it to probe perception-evidence
+retrieval over a scene-graph corpus, not as an open-domain RAG benchmark.)}
 \label{tab:gqa}
 \end{table}
 
 \subsection{Ablation Design}
 \label{sec:ablations}
 
-Table~\ref{tab:ablations} pre-registers the ablation grid. \textbf{A1}
-tests whether both reward sources are necessary ($\alpha \in \{0, 0.2,
-0.5, 0.8, 1\}$) and whether the support gate matters (Eq.~\ref{eq:support}
-on/off). \textbf{A2} varies the exploration constant ($c \in \{0, 0.5, 1,
-2\}$; $c{=}0$ is greedy PRM). \textbf{A3} accumulates the PRM training
-stages (SFT / +DPO / +calibration) against the frozen VisualPRM-8B
-zero-shot scorer. \textbf{A4} grows the action space
-(\textsc{text\_search}-only $\rightarrow$ +\textsc{image\_search}).
-\textbf{A5} varies the search budget ($d_{\max} \in \{2,3,5\}$, $P \in
-\{4,10,20\}$) against Best-of-$N$ at matched PRM-call budgets --- the
-decisive test that \emph{tree} search, not merely PRM reranking, carries
-the gains. \textbf{A6} evaluates robustness under corpus poisoning
+Table~\ref{tab:ablations} pre-registers the ablation grid, one block per
+design decision. \textbf{A1} tests whether both reward sources are
+necessary ($\alpha \in \{0, 0.2, 0.5, 0.8, 1\}$) and whether the support
+gate matters (Eq.~\ref{eq:support} on/off). \textbf{A2} varies the
+exploration constant ($c \in \{0, 0.5, 1, 2\}$; $c{=}0$ is greedy PRM).
+\textbf{A3} accumulates the PRM training stages (SFT / +DPO /
++calibration) against the frozen VisualPRM-8B zero-shot scorer.
+\textbf{A4} grows the action space (\textsc{text\_search}-only
+$\rightarrow$ +\textsc{image\_search}). \textbf{A5} varies the search
+budget ($d_{\max} \in \{2,3,5\}$, $P \in \{4,10,20\}$) against
+Best-of-$N$ at matched PRM-call budgets --- the decisive test of whether
+\emph{tree} search, rather than PRM reranking alone, carries any gains.
+\textbf{A6} evaluates robustness under corpus poisoning
 \cite{poisonedmrag2025}: 5--20 adversarial image--text pairs injected per
 query; we measure the answer flip rate with and without PRM-guided
 backtracking.
@@ -765,9 +888,10 @@ Ablation & Variant & InfoSeek & SQA & GQA \\
  & text-only & \NA & \NA & \NA \\
  & + image search & \NA & \NA & \NA \\
 \midrule
-\multirow{2}{*}{A5 budget}
+\multirow{3}{*}{A5 budget}
  & BoN, matched calls & \NA & \NA & \NA \\
  & $P{=}4 / 20$ & \NA & \NA & \NA \\
+ & $d_{\max}{=}2 / 5$ & \NA & \NA & \NA \\
 \bottomrule
 \end{tabular}
 \caption{Pre-registered ablation grid (accuracy; ``\NA'' = training in
@@ -804,6 +928,7 @@ results will populate the ``\NA'' cells upon training completion.
 % =========================================================================
 \clearpage
 \appendix
+\onecolumn
 
 \section{Action Space: Rejected Designs}
 \label{app:actions}
@@ -811,8 +936,8 @@ results will populate the ``\NA'' cells upon training completion.
 Under a rollout budget of $P{=}10$, four search actions halve per-branch
 visit counts; result modality is better decided by the retriever's
 similarity in the unified index; and grounding already scores by the
-\emph{actual} modality of each returned result
-(Eq.~\ref{eq:grounding}), so the action type need not carry it.
+\emph{actual} modality of each returned result (Eq.~\ref{eq:grounding}),
+so the action type need not carry it.
 \paragraph{Why no \textsc{parallel\_search}.}
 Tree expansion already explores multiple candidates (OR-semantics), and
 AND-semantics (fuse evidence from two sources) is expressible serially ---
@@ -822,12 +947,13 @@ credit, and dilute the budget.
 \paragraph{Why no \textsc{caption} action.}
 Captioning does not modify the observable state: an edge with an unchanged
 state has no retrieval result to ground ($g$ undefined), creates
-parent-child duplicates that dilute Eq.~\eqref{eq:credit}, and burns
+parent--child duplicates that dilute Eq.~\eqref{eq:credit}, and burns
 budget. The policy VLM sees the image directly, so caption-style
 verbalization is folded into the proposal prompt
 (Appendix~\ref{app:prompts}); cf.\ the caption action of
-\citet{chen2026learningtosearch}, which their inference likewise restricts
-to a pre-answer query-rewriting aid.
+\citet{chen2026learningtosearch}, which their inference restricts to an
+optional caption emitted before the final action to help form a better
+text query.
 \paragraph{Why no modality-coverage bonus in UCB1.}
 With three actions there is little to ``cover''; a $\lambda$-weighted
 novelty term adds three hyperparameters and competes with the PRM's $Q$
@@ -849,12 +975,14 @@ image alone by perception/logic/commonsense --- never applicable to
 fine-grained entity facts (species data, dates, measurements). The fourth
 verdict maps to \emph{no gating} (outcome-only), which repairs the
 systematic penalty that entailment-gating inflicts on reasoning-type
-multiple-choice answers, while leaving the anti-guess gate fully active on
-knowledge-seeking questions. Raw verdicts ship with the dataset for
-auditability. An offline lexical fallback (answer content-word/number
-coverage in the evidence, with unmatched numbers vetoing) supports
-API-free smoke runs; unparseable or unverifiable cases return no verdict
-and fall back to outcome-only rather than fabricating a value.
+multiple-choice answers (Appendix~\ref{app:cases}, Case~3), while leaving
+the anti-guess gate fully active on knowledge-seeking questions. Raw
+verdicts ship with the dataset for auditability. An offline lexical
+fallback (answer content-word/number coverage in the evidence, with
+unmatched numbers vetoing) supports API-free smoke runs; unparseable or
+unverifiable cases return no verdict and fall back to outcome-only rather
+than fabricating a value. The judge prompt is given verbatim in
+Appendix~\ref{app:prompts}.
 
 \section{Dataset Schema and Quality Control}
 \label{app:dataset}
@@ -872,7 +1000,11 @@ their low-scored steps are the PRM's negative curriculum --- and
 correct-but-unsupported answers are retained with flags as DPO rejected
 candidates. Validation enforces score-fusion identities, per-field ranges,
 the answer$\Leftrightarrow$null-grounding rule, query-disjoint splits, and
-redistributable image references.
+redistributable image references. For InfoSeek, answer matching follows
+the official two-type protocol: string questions use relaxed exact match
+over the gold set; VALUE questions extract numbers from the prediction and
+accept any inside the gold range --- a deterministic rule, not an LLM
+judge.
 
 \section{Construction Pilot Statistics}
 \label{app:pilot}
@@ -883,12 +1015,14 @@ QC (drops dominated by the grounding--outcome gap rule). The pilot
 surfaced --- and motivated the fixes for --- three construction-level
 failure modes: (i) \emph{parametric lucky guesses} on InfoSeek (answers
 judged correct with zero evidence support), addressed by the support gate
-of Eq.~\eqref{eq:support}; (ii) \emph{systematic entailment penalties} on
-ScienceQA reasoning questions (105 of 170 correct answers initially judged
-unsupported), addressed by the \textsc{not\_required} verdict; and (iii)
-\emph{action imbalance and trajectory collapse} on InfoSeek
-(image:text search ratio 166:54 against a text-only corpus; $\approx$2
-deduplicated trajectories per query), addressed by retrieval-chain and
+of Eq.~\eqref{eq:support} and illustrated in Appendix~\ref{app:cases},
+Case~2; (ii) \emph{systematic entailment penalties} on ScienceQA reasoning
+questions (105 of the 170 answer steps flagged correct-but-unsupported),
+addressed by the \textsc{not\_required} verdict (Case~3); and (iii)
+\emph{action imbalance and trajectory collapse} on InfoSeek (of its 426
+retained samples, 206 are answer steps and the 220 retained search steps
+split 166:54 image:text --- inverted against a text-only corpus; and only
+$\approx$2 deduplicated trajectories survive per query), addressed by retrieval-chain and
 proposal-diversity constraints in the policy prompt
 (Appendix~\ref{app:prompts}). We report these numbers for transparency:
 dataset papers rarely publish their construction pathologies, yet they
@@ -896,23 +1030,202 @@ determine label quality.
 
 \section{Prompts}
 \label{app:prompts}
-\paragraph{Policy proposal prompt (excerpt).}
-The policy must not invent entity identities not established by the image
-or evidence; an entity name \emph{that already appears in the evidence} is
-explicitly not a guess and should seed \textsc{text\_search}; once the
-entity is identified but the asked attribute is missing, the next proposal
-must pair the evidence-established name with the attribute rather than
-answering from an entity match alone; candidate queries within one
-proposal must differ in angle (entity+attribute / bare keywords /
-rephrasing) and never repeat a query already executed on the path;
-answering is licensed only when the evidence supports it or the question
-is answerable from the image and question alone.
-\paragraph{Rationale prompt (excerpt).}
-The writer judges the step only from the question, evidence, and action
---- as if the final outcome were unknown; never mentions gold answers or
-evaluation language; states plainly when evidence fails to support the
-step; and ends with \texttt{VERDICT: good|mixed|poor} consistent with the
-assigned score.
+
+This appendix reproduces, verbatim, the three prompts used by the system:
+the policy proposal prompt (inference-time expansion and dataset rollouts),
+the rationale-generation prompt (dataset Step 3), and the answer-support
+judge prompt (dataset Step 2). Placeholders in braces are filled at run
+time.
+
+\subsection{Policy Proposal Prompt (Expansion / Rollouts)}
+\begin{lstlisting}[style=prompt]
+You are planning retrieval actions to answer a question about the given image.
+
+Question: {question}
+Evidence collected so far:
+{evidence}
+
+Propose up to {k} candidate next actions as JSON, one per line. Allowed:
+  {"type": "text_search", "query": "..."}    # query the corpus with text
+  {"type": "image_search"}                    # query the corpus with the image
+  {"type": "answer", "text": "..."}
+
+Rules:
+- The question refers to the given image (e.g. "this bird", "this building").
+  Do NOT invent or assume a specific entity identity (a concrete species,
+  landmark, person, ...) that the image and evidence have not established.
+  Guessing an identity and searching for it propagates errors through the
+  whole trajectory.
+- Using an entity name that ALREADY APPEARS IN THE EVIDENCE above is NOT
+  guessing: once image_search (or an earlier text_search) has surfaced the
+  entity, you SHOULD build text_search queries from that evidence-established
+  name.
+- Retrieval chain for entity questions: if the entity is not yet identified,
+  FIRST use image_search to match the image against the corpus. Once the
+  entity is identified but the ASKED ATTRIBUTE is still missing from the
+  evidence, the next action MUST include a text_search combining the
+  evidence-established entity name with the asked attribute (e.g.
+  "<entity name> opening date") -- do NOT answer from an entity match alone.
+- Make the candidates genuinely different from each other: text_search
+  queries within one proposal must not be near-duplicates -- vary the angle
+  (entity name + attribute, bare keywords, a rephrasing of the question), and
+  never re-issue a query already executed on this path.
+- Keep every search query faithful to the original question's intent; do not
+  drift away from what is actually being asked.
+- Only answer when the collected evidence actually supports the answer, OR
+  when the question is answerable from the image and question alone by
+  perception, logic, or everyday commonsense (no external facts needed).
+Output ONLY the JSON lines.
+\end{lstlisting}
+
+\subsection{Rationale-Generation Prompt (Dataset Step 3)}
+\begin{lstlisting}[style=prompt]
+You are writing a training rationale for a process reward model that judges
+retrieval actions.
+
+Question: {question}
+Evidence collected BEFORE this action:
+{evidence_before}
+Action taken: {action_type}({action_input})
+Evidence retrieved BY this action:
+{observation}
+Assigned quality score: {score}  (0 = poor action, 1 = excellent action)
+
+Write a rationale of 30-150 tokens explaining WHY this score is appropriate.
+Requirements:
+- explicitly mention the action type "{action_type}";
+- cite at least one evidence id in square brackets, e.g. [e0];
+- be concrete about how the evidence supports (or fails to support) progress
+  toward answering the question;
+- judge the step ONLY from the question, the evidence, and the action -- as if
+  the final outcome were still unknown. NEVER mention or hint at a gold /
+  ground-truth answer and never use evaluation language such as "the answer is
+  correct" or "matches the ground truth";
+- if the evidence does not actually support the step's usefulness, say so
+  plainly.
+After the rationale, end with ONE final line of exactly this form (it must be
+consistent with the assigned score):
+VERDICT: good     (clearly useful step)   or
+VERDICT: mixed    (partially useful)      or
+VERDICT: poor     (useless or harmful)
+\end{lstlisting}
+
+\subsection{Answer-Support Judge Prompt (Dataset Step 2)}
+\begin{lstlisting}[style=prompt]
+Question: {question}
+
+Evidence collected so far:
+{evidence}
+
+Proposed final answer: {answer}
+
+Classify how this answer relates to the evidence. Reply with exactly one word:
+
+- SUPPORTED: the evidence explicitly contains or entails the answer. For a
+  multiple-choice answer it is enough that the evidence entails the CONTENT of
+  the chosen option (verbatim wording is not required). An absence answer like
+  "no" counts as supported when the evidence describes the relevant
+  scene/content and it lacks the asked-about item.
+- PARTIAL: the evidence points toward the answer but leaves a substantive part
+  of it unconfirmed.
+- UNSUPPORTED: the answer relies on external factual knowledge (entity facts,
+  numbers, dates, names, statistics) that the evidence does not contain.
+- NOT_REQUIRED: the answer is derivable from the question text and the visible
+  image content alone, by perception, logic, or everyday commonsense -- no
+  external factual knowledge is needed. Do NOT use this for fine-grained
+  entity facts (species data, dates, measurements, biographies): those always
+  require evidence.
+\end{lstlisting}
+
+\section{Case Studies from the Construction Pilot}
+\label{app:cases}
+
+The following four cases are drawn from real trajectories of the
+construction pilot (Appendix~\ref{app:pilot}); evidence snippets are
+abridged. They illustrate, in order: the intended behavior, and the three
+failure modes that shaped the reward design of
+Section~\ref{sec:reward}.
+
+\subsection*{Case 1 (InfoSeek, success): the disambiguate-then-look-up chain}
+\begin{itemize}
+\item \textbf{Question}: ``When did this building officially open?''
+(image of the Pro Football Hall of Fame); gold: September 7, 1963.
+\item \textbf{Step 1} \textsc{text\_search}(``opening date Pro Football
+Hall of Fame'') $\to$ passage containing ``\ldots opened on September 7,
+1963\ldots''. High grounding; on a successful trajectory; kept as a
+high-score positive.
+\item \textbf{Step 2} \textsc{image\_search}(query image) $\to$ further
+pages on the same entity (award lists, inductees). Topically related but
+adds no new information for the asked attribute --- see Case~4.
+\item \textbf{Step 3} \textsc{answer}(``September 7, 1963'') $\to$ correct
+\emph{and} supported: the date is present in cited evidence, so
+$\mathrm{supp}{=}1$ and the answer step receives a full-score label.
+\end{itemize}
+
+\subsection*{Case 2 (InfoSeek, failure): the parametric lucky guess}
+\begin{itemize}
+\item \textbf{Question}: ``What is the maximum weight this bird usually
+grows to?'' (image of a mourning dove); gold: $\approx$153\,g with
+tolerance.
+\item \textbf{Step 1} \textsc{text\_search}(``how heavy does mourning dove
+grow up to'') $\to$ passages comparing dove species qualitatively; no
+weight figure. \textbf{Step 2} \textsc{image\_search} $\to$ sparrow and
+dove-call passages; irrelevant. Both search steps have very low grounding
+on a trajectory whose outcome is 1.0; the
+$|g - R_\mathrm{out}| > 0.7$ rule drops both samples as
+self-contradictory labels.
+\item \textbf{Step 3} \textsc{answer}(``Up to 145 grams'') $\to$ judged
+\emph{correct} by the tolerance metric, yet \emph{no evidence contains any
+weight figure}. Without the support gate this step would be labeled 1.0
+--- a perfect score for answering from parametric memory --- and the PRM
+would learn that evidence-free answering is optimal. With
+Eq.~\eqref{eq:support}: $\mathrm{supp}{=}0$ (the unmatched number vetoes),
+the label drops to $\gamma \cdot 1.0 = 0.3$, and the sample is flagged
+\texttt{unsupported\_correct} for use as a DPO rejected side against
+sibling actions that kept searching.
+\end{itemize}
+
+\subsection*{Case 3 (ScienceQA, failure): entailment-gating a reasoning answer}
+\begin{itemize}
+\item \textbf{Question}: ``Which question can Jen's experiment best
+answer?'' (options about radish size vs.\ leaf count under different
+light); gold: the size option.
+\item \textbf{Step 1} \textsc{text\_search}(``radishes bright light dim
+light growth'') $\to$ a passage describing the experiment comparing radish
+\emph{sizes} under two light conditions --- decisive for choosing the
+size option.
+\item \textbf{Step 2} \textsc{answer}(size option) $\to$ correct. A pure
+entailment judge, however, rules \textsc{unsupported}: no document states
+``therefore choose option A'' --- the answer is \emph{derived} from the
+evidence and the option semantics, not contained in any span. In the
+pilot, 105 of the 170 ScienceQA answer steps were flagged
+correct-but-unsupported this way,
+pinning them at the 0.3 floor and teaching the PRM a systematic bias
+against reasoning-type answers. The \textsc{not\_required} verdict
+(Appendix~\ref{app:support}) repairs exactly this: the judge classifies
+the question as answerable from the question, options, and evidence-backed
+premises by reasoning, and the answer step falls back to its outcome
+label.
+\end{itemize}
+
+\subsection*{Case 4 (open issue): redundant retrieval on solved states}
+\begin{itemize}
+\item In Case~1, Step~2 retrieves same-entity content \emph{after} the
+asked attribute is already in the bundle. Its grounding is not low ---
+same-entity results are topically relevant --- and it lies on a successful
+trajectory, so it receives a high label from Eq.~\eqref{eq:fusion} despite
+adding nothing: relevance and \emph{marginal utility} diverge. This
+over-search pattern (cf.\ \citealt{hipragr2025}) is the one construction
+pathology we deliberately did not patch yet: a naive novelty discount
+$g' = g \cdot (1 - \max\cos(\text{new evidence}, \mathcal{E}))$ would also
+punish legitimate multi-source corroboration, which the poisoning
+robustness of Section~\ref{sec:ablations} depends on. We record a
+marginal-gain field per step in \dataset{} and defer the labeling decision
+until the full-scale distributions separate redundancy from corroboration;
+same-state DPO pairs (answer-now vs.\ search-more, both successful)
+provide a label-free training route for \emph{when to stop} in the
+meantime.
+\end{itemize}
 
 \section{Notation}
 \label{app:notation}
@@ -930,11 +1243,12 @@ $g(a,s)$ & local grounding (Eq.~\ref{eq:grounding}) \\
 $R_\mathrm{out}(s,a)$ & tree-level outcome credit (Eq.~\ref{eq:credit}) \\
 $\mathrm{supp}(y,\mathcal{E})$ & answer-support verdict (Eq.~\ref{eq:support}) \\
 $\alpha,\; \gamma$ & fusion weight (0.5); support floor (0.3) \\
-$Q(a\,|\,s)$ & PRM action value (exploitation term) \\
+$Q_{\phi}(a\,|\,s)$ & PRM prior value for a candidate action \\
+$Q(a\,|\,s)$ & running mean of backed-up rewards (Eq.~\ref{eq:ucb}), seeded by $Q_{\phi}$ \\
 $N(s), N(s,a)$ & node / edge visit counts \\
 $c$ & UCB1 exploration constant (1.0) \\
 $P,\; d_{\max},\; k$ & rollouts (10); max depth (3); children (3) \\
-$\tau_{\mathrm{stop}}$ & early-stop threshold \\
+$\eta_{\mathrm{stop}}$ & early-stop threshold \\
 \bottomrule
 \end{tabular}
 \caption{Notation.}
