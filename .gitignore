@@ -46,3 +46,8 @@ wandb/
 .DS_Store
 .idea/
 .vscode/
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
