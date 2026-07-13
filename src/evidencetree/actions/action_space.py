@@ -1,9 +1,10 @@
-"""Retrieval action space (Stage 1, v1.3 minimal set).
+"""Retrieval action space (Stage 1, v1.3 compressed set).
 
 Typed actions over which the MCTS searches:
 
     text_search(query)              — text retrieval          [required]
-    image_search(image, region?)    — image retrieval         [required]
+    image_search(image, region?)    — image-query CLIP retrieval over a
+                                      shared text/image corpus index
     answer(text)                    — terminal action         [required]
 
 Deferred until Stage 0.4 statistics: crop / zoom / focus. New action types are
@@ -73,7 +74,11 @@ class TextSearchAction(Action):
 @register_action
 @dataclass(frozen=True)
 class ImageSearchAction(Action):
-    """Retrieve image-text pairs using an image (or a region of it) as query.
+    """Retrieve from the corpus using an image (or region) as the query.
+
+    The corpus side lives in one shared CLIP space: documents with images are
+    embedded by the image tower; text-only documents are embedded by the text
+    tower. Therefore this action may retrieve image-side or text-side docs.
 
     ``image_path=None`` means "use the state's own image". ``region`` is an
     optional normalized bbox (x1, y1, x2, y2) in [0, 1].
@@ -152,6 +157,14 @@ class SearchState:
         return [
             f"{e.title}: {e.text}" if e.title else e.text for e in self.evidence
         ]
+
+    def evidence_image_paths(self) -> list[str]:
+        """Unique images returned by retrieval, in evidence order."""
+        paths = []
+        for evidence in self.evidence:
+            if evidence.image_path and evidence.image_path not in paths:
+                paths.append(evidence.image_path)
+        return paths
 
     def advanced(self, action: Action, new_evidence: list[Evidence]) -> "SearchState":
         """New state after a retrieval action appended ``new_evidence``."""

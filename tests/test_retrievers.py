@@ -5,7 +5,13 @@ import zlib
 
 import pytest
 
-from evidencetree.actions.retrievers import BM25Retriever, DenseRetriever
+from evidencetree.actions.retrievers import (
+    BM25Retriever,
+    ClipImageRetriever,
+    CragImageRetriever,
+    CragWebRetriever,
+    DenseRetriever,
+)
 from evidencetree.eval.benchmarks import Document, load_infoseek
 
 
@@ -90,3 +96,96 @@ def test_dense_retriever_search_before_build_raises():
 def test_dense_retriever_empty_corpus_raises():
     with pytest.raises(ValueError):
         DenseRetriever(encoder=_hash_encoder).build([])
+
+
+def test_clip_image_retriever_finds_matching_image(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    red = tmp_path / "red.png"
+    blue = tmp_path / "blue.png"
+    Image.new("RGB", (8, 8), "red").save(red)
+    Image.new("RGB", (8, 8), "blue").save(blue)
+
+    def image_encoder(images):
+        return np.asarray(
+            [
+                np.asarray(image, dtype="float32").mean(axis=(0, 1))
+                for image in images
+            ]
+        )
+
+    corpus = [
+        Document(doc_id="red", text="red image", image_path=str(red)),
+        Document(doc_id="blue", text="blue image", image_path=str(blue)),
+    ]
+    retriever = ClipImageRetriever(
+        encoder=_hash_encoder, image_encoder=image_encoder
+    ).build(corpus)
+
+    assert retriever.search_image(str(red), top_k=1)[0].doc_id == "red"
+
+
+class _FakeChromaCollection:
+    def __init__(self, metadata):
+        self.metadata = metadata
+        self.last_query = None
+
+    def query(self, **kwargs):
+        self.last_query = kwargs
+        return {
+            "ids": [["item-1"]],
+            "metadatas": [[self.metadata]],
+            "distances": [[0.2]],
+        }
+
+
+def test_crag_web_retriever_formats_official_index_metadata():
+    import numpy as np
+
+    collection = _FakeChromaCollection(
+        {
+            "page_name": "Example page",
+            "page_snippet": "The indexed fact.",
+            "page_url": "https://example.test/page",
+        }
+    )
+    retriever = CragWebRetriever(
+        index_path="unused",
+        model_name="unused",
+        encoder=lambda texts: np.ones((len(texts), 4), dtype="float32"),
+        collection=collection,
+    )
+    hit = retriever.search("indexed fact", top_k=1)[0]
+
+    assert hit.doc_id == "crag-web:item-1"
+    assert hit.title == "Example page"
+    assert "The indexed fact." in hit.text
+    assert hit.score == pytest.approx(0.8)
+
+
+def test_crag_image_retriever_formats_entity_metadata(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    query = tmp_path / "query.png"
+    Image.new("RGB", (8, 8), "green").save(query)
+    collection = _FakeChromaCollection(
+        {
+            "entities": '[{"name":"Eiffel Tower"}]',
+            "info": '{"city":"Paris"}',
+            "image_url": "https://example.test/image.jpg",
+        }
+    )
+    retriever = CragImageRetriever(
+        index_path="unused",
+        model_name="unused",
+        image_encoder=lambda images: np.ones((len(images), 4), dtype="float32"),
+        collection=collection,
+    )
+    hit = retriever.search_image(str(query), top_k=1)[0]
+
+    assert hit.doc_id == "crag-image:item-1"
+    assert "Eiffel Tower" in hit.text
+    assert "Paris" in hit.text
+    assert hit.image_path is None

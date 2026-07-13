@@ -1,7 +1,12 @@
 """Benchmark loaders.
 
-Stage 0.1 only needs InfoSeek (questions + a Wikipedia-style corpus + gold
-answers). Two modes:
+Benchmarks are normalized to a shared pair of JSONL files:
+
+* ``queries.jsonl`` with question, answer, and optional image fields.
+* ``corpus.jsonl`` with retrievable text documents.
+
+InfoSeek keeps its historical ``infoseek_queries.jsonl`` /
+``infoseek_corpus.jsonl`` filenames. Two modes:
 
 * ``mock=True``  -> a tiny synthetic, self-contained dataset. No download, no
   GPU. The corpus is constructed so BM25 can actually retrieve the supporting
@@ -69,6 +74,22 @@ def load_infoseek(
     return _load_infoseek_real(n=n, data_dir=data_dir, seed=seed)
 
 
+def load_benchmark(
+    name: str,
+    n: int = 1000,
+    mock: bool = False,
+    data_dir: str | Path | None = None,
+    seed: int = 0,
+) -> tuple[list[Query], list[Document]]:
+    """Load any benchmark converted to the shared JSONL format."""
+    normalized = name.lower().replace("-", "").replace("_", "")
+    if mock or normalized == "infoseek":
+        return load_infoseek(n=n, mock=mock, data_dir=data_dir, seed=seed)
+    if data_dir is None:
+        raise ValueError(f"data.data_dir is required for benchmark {name!r}.")
+    return _load_jsonl_benchmark(n=n, data_dir=data_dir, seed=seed)
+
+
 # --------------------------------------------------------------------------- #
 # Real loader
 # --------------------------------------------------------------------------- #
@@ -115,6 +136,43 @@ def _load_infoseek_real(
     if n < len(queries):
         rng = random.Random(seed)
         queries = rng.sample(queries, n)
+    return queries, corpus
+
+
+def _load_jsonl_benchmark(
+    n: int, data_dir: str | Path, seed: int
+) -> tuple[list[Query], list[Document]]:
+    data_dir = Path(data_dir)
+    queries_path = data_dir / "queries.jsonl"
+    corpus_path = data_dir / "corpus.jsonl"
+    if not queries_path.exists() or not corpus_path.exists():
+        raise FileNotFoundError(
+            f"Converted benchmark data not found in {data_dir}.\n"
+            f"  Expected: {queries_path}\n"
+            f"            {corpus_path}"
+        )
+
+    corpus = [
+        Document(
+            doc_id=str(obj["doc_id"]),
+            text=obj["text"],
+            title=obj.get("title", ""),
+            image_path=obj.get("image_path"),
+        )
+        for obj in _read_jsonl(corpus_path)
+    ]
+    queries = [
+        Query(
+            query_id=str(obj["query_id"]),
+            question=obj["question"],
+            gold_answers=_as_str_list(obj["gold_answers"]),
+            image_path=obj.get("image_path"),
+            metadata=obj.get("metadata", {}),
+        )
+        for obj in _read_jsonl(queries_path)
+    ]
+    if n < len(queries):
+        queries = random.Random(seed).sample(queries, n)
     return queries, corpus
 
 

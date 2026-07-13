@@ -30,10 +30,38 @@ policy:                              # Step 1 policy VLM（API 形式）
 
 retriever:
   top_k: 5
+  image_search: false                 # true=用 query image 检索共享 CLIP 语料索引
+  cross_modal: false                  # 已废弃；保留仅为兼容旧命令覆盖
+  clip_model: clip-ViT-B-32           # image_search 用的 CLIP 模型
+  ocr:
+    enabled: false                    # OCR 不再作为默认 MCTS action
+    command: /home/wenke/SQJ/code/EvidenceTree/.tools/tesseract/bin/tesseract
+    language: eng                     # tesseract -l
+    psm: 3                            # tesseract --psm
 
 verifier:                            # Step 2 grounding verifier
-  backend: lexical                   # lexical（离线、免费）| api（LLM judge）
+  backend: clip                      # clip(正式) | lexical(mock/离线)
+  clip_model: clip-ViT-B-32
+  text_cos_lo: 0.5
+  text_cos_hi: 0.9
+  image_cos_lo: 0.15
+  image_cos_hi: 0.32
   alpha: 0.5                         # score = alpha*local + (1-alpha)*outcome
+  support:                           # answer 步：答案是否被已积累证据支撑
+    backend: api                     # api | lexical | off
+    floor: 0.3                       # 答对无支撑约 0.3，答对且有支撑接近 1
+    unsupported_threshold: 0.3       # outcome>=0.5 且 support<=此值 -> unsupported_correct
+    generation:
+      backend: api
+      provider: openai
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      max_new_tokens: 8
+      temperature: 0.0
+      timeout: 60
+      extra_body:
+        thinking: {type: disabled}
   generation:                        # 仅 backend=api 时使用
     backend: api
     provider: openai                 # DeepSeek 走 OpenAI 兼容端点
@@ -68,6 +96,11 @@ quality:                             # Step 4 质量过滤
   max_grounding_outcome_gap: 0.7     # |local - outcome| 超过即视为 noisy label 丢弃
   dedupe_within_query: true          # 同 query 内动作序列完全相同的轨迹去重
   val_fraction: 0.05                 # 按 query 划 train/val（同 query 不跨集）
+
+action_gate:
+  enabled: false                     # 新版动作空间先不使用本地 gate
+  mode: heuristic
+  max_actions: 3
 
 output:                              # 中间与最终产物（mock 模式自动加 mock_ 前缀）
   trajectories: data/trajectories/infoseek_trajectories.jsonl   # Step 1

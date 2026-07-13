@@ -31,6 +31,57 @@ python DatasetConstruct/run_pipeline.py --force        # 忽略已有输出重�
 
 每一步也可单独运行：`python DatasetConstruct/step1_gen_trajectories.py --mock` 等。
 
+### 本地 Qwen2.5-VL-7B
+
+模型默认部署在 `models/Qwen2.5-VL-7B-Instruct/`，独立环境位于
+`.venv-qwen25vl/`。启动 OpenAI 兼容服务：
+
+```bash
+DatasetConstruct/start_qwen25vl.sh
+```
+
+服务地址为 `http://127.0.0.1:8000/v1`。单次图片问答：
+
+```bash
+.venv-qwen25vl/bin/python DatasetConstruct/qwen25vl_infer.py \
+  --image /path/to/image.jpg --prompt "Describe this image."
+```
+
+服务已注册为用户级 systemd 服务：
+
+```bash
+systemctl --user status qwen25vl
+systemctl --user restart qwen25vl
+systemctl --user stop qwen25vl
+journalctl --user -u qwen25vl -f
+```
+
+运行数据构造时使用完整的本地配置：
+
+```bash
+python DatasetConstruct/run_pipeline.py \
+  --config DatasetConstruct/config.qwen25vl.yaml --n 100
+```
+
+该配置默认开启 `image_search`：使用 CPU 上的
+`sentence-transformers/clip-ViT-B-32` 对 `corpus.jsonl` 中带
+`image_path` 的文档建图像索引，每次返回 3 个结果。检索出的图片会连同原始
+query 图片一起交给 Qwen2.5-VL；首次运行会从 Hugging Face 下载约 578 MB
+的 CLIP 模型。
+
+`ocr(image, region?)` 已作为可选 MCTS 动作保留，但默认关闭。它不是 Top-K
+检索器，而是对当前 query/evidence 图像直接读取文字，只返回一条 OCR evidence。
+启用方式：
+
+```bash
+--set retriever.ocr.enabled=true
+```
+
+OCR action 依赖系统安装的 `tesseract` CLI。由于 OCR 没有可比较的 Top-K
+候选结果，Step 2 不给它 local grounding，`score=outcome_credit`；同时样本
+会带 `score_source=outcome_only` 和较低的 `label_weight`，训练时可用这个权重
+避免它压过有 local 分的动作。
+
 ---
 
 ## API key 填在哪
@@ -44,6 +95,7 @@ cp DatasetConstruct/.env.example DatasetConstruct/.env   # 然后编辑 .env
 | 环境变量 | 用在哪一步 | 说明 |
 |---|---|---|
 | `DASHSCOPE_API_KEY` | Step 1 policy VLM | 默认配置走 DashScope 的 OpenAI 兼容端点跑 Qwen2.5-VL-7B（报告指定的 weak policy） |
+| `LOCAL_QWEN_API_KEY` | 本地 Qwen policy VLM | 本地服务不校验 key，保留非空占位值 `local` 即可 |
 | `DEEPSEEK_API_KEY` | Step 3 rationale；verifier=api 时的 judge | 强 LLM 默认 **deepseek-v4-pro**（OpenAI 兼容端点 `https://api.deepseek.com/v1`） |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 可选 | 若把 provider 换回 Claude / GPT-4o |
 
@@ -99,6 +151,58 @@ image_downloads 说明下载（量大，建议直接下到 GPU 服务器）。�
 检索全程在本地 BM25/FAISS 索引上进行，**绝不调用 web 检索 API**——这是项目
 可复现性的硬约束（报告 §4.1.4）。
 
+### 其他已下载数据集
+
+ScienceQA 和 MRAG-Bench 可先转换少量样本：
+
+```bash
+.venv-qwen25vl/bin/python DatasetConstruct/prepare_other_datasets.py \
+  --dataset all --n 5
+```
+
+转换结果位于 `data/corpus/<dataset>/`，统一使用：
+
+```text
+queries.jsonl  # query_id, question, gold_answers, image_path, metadata
+corpus.jsonl   # doc_id, title, text, optional image_path
+assets/        # 抽取的查询图/页面图；MRAG corpus 直接引用外盘完整图像库
+```
+
+运行其中一个数据集：
+
+```bash
+.venv-qwen25vl/bin/python DatasetConstruct/run_pipeline.py \
+  --config DatasetConstruct/config.qwen25vl.yaml --n 1 --force \
+  --set benchmark=scienceqa \
+  --set data.data_dir=data/corpus/scienceqa \
+  --set output.trajectories=data/trajectories/scienceqa_trajectories.jsonl \
+  --set output.scored=data/trajectories/scienceqa_scored.jsonl \
+  --set output.rationales=data/trajectories/scienceqa_rationales.jsonl \
+  --set output.dataset_dir=data/etbench_open/scienceqa
+```
+
+当前适配能力：
+
+| 数据集 | 当前适配 |
+|---|---|
+| ScienceQA | 查询图只交给 Qwen；lecture/hint 作为文本语料，不把查询图复制进检索库 |
+| MRAG-Bench | 18,984 张无标签候选图进入 CLIP/FAISS；15 张查询图及其内容重复副本已排除 |
+
+MRAG 的首次运行会建立
+`data/corpus/mrag_bench/clip_index`，后续直接复用 43 MB 的 FAISS 缓存。
+
+2026-06-17 起，SlideVQA 和 M3DocVQA 的适配、OCR 动作和专用测试入口已从
+当前管道移除。之后 OCR 作为通用动作重新加入，但不恢复这两个数据集的专用
+适配逻辑。历史生成数据可能仍在 `data/` 中，但默认脚本不再引用它们。
+
+小样本结果位于 `data/pipeline_<N>q/<dataset>/`。问题级命中表示同一问题至少
+有一条 rollout 精确匹配正确答案；这些小样本只用于验证适配和管道，不代表完整
+benchmark 准确率。
+
+作者版 CLIP image grounding 在本轮的实际分布：
+
+- MRAG-Bench：19 个 `image_search`，均值 `0.8002`，范围 `0.3663–1.0`。
+
 ---
 
 ## 各步骤的产物：放哪、什么格式
@@ -136,6 +240,11 @@ mock 模式的产物自动加 `mock_` 前缀（Step 4 则写进 `mock/` 子目�
   序列完全相同的去重，开关 `quality.dedupe_within_query`）。
 - `gen_reward` 是生成期的引导分（启发式 scorer），**不是训练标签**。
 - **断点续跑**：重跑时已有 `query_id` 自动跳过。
+- `image_search` 步额外保存 `region` 和实际查询 `image_path`。Step 2 使用
+  query 图像（或 region）与 question 做 CLIP 图文对齐；不同 region 的
+  `action_input` 也不同，因此会被视为不同的 tree-credit 节点。
+- `ocr` 步保存实际读取的图像/region，并把识别出的文本作为一条 evidence。
+  OCR 不返回 Top-K，因此没有 local grounding，只使用 tree-level outcome credit。
 
 ### Step 2 → `data/trajectories/infoseek_scored.jsonl`
 
@@ -159,6 +268,11 @@ mock 模式的产物自动加 `mock_` 前缀（Step 4 则写进 `mock/` 子目�
 
 - `local_grounding`：verifier 的 graded 分（0–1 连续）；**answer 步为 null**
   （不参与 local，由 outcome 决定）。
+  - `text_search`：搜索 query 与原问题的内容词对齐度。
+  - `image_search`：query 图像/region 与问题文本的 CLIP cosine，经
+    `[verifier.cos_lo, verifier.cos_hi]` 线性映射到 `[0,1]`。
+    这不是检索结果相似度的平均值；缺少图片或 CLIP 失败时回退到 `0.5`。
+  - `ocr`：为 null。OCR 当前只产生单条识别结果，没有 Top-K 候选可比较。
 - `outcome_credit`：**tree-level credit** —— 同 query 内经过相同动作前缀的
   所有轨迹的成功率（`n_traj_through` 条的 Monte Carlo 均值）。**不是**把整条
   轨迹的 final reward 均摊给每个 step（那是报告 §4.1.1 点名的经典 bug）。
@@ -199,7 +313,7 @@ data/etbench_open/
 |---|---|---|---|
 | 轨迹过短/过长整条丢弃 | 2 ≤ 步数 ≤ 8 | `quality.min_steps` / `max_steps` | 报告 §3.5 |
 | grounding↔outcome 严重不一致的样本丢弃（noisy label） | \|local−outcome\| > 0.7 | `quality.max_grounding_outcome_gap` | 报告 §3.5 |
-| rationale 必须：引用 ≥1 个样本内可见的 evidence_id；明确提到动作类型；长度 50–150 token | — | 代码 `prm/rationale_gen.py::check_rationale` | 报告 §3.5 |
+| rationale 必须：引用 ≥1 个样本内可见的 evidence_id；明确提到动作类型；长度 50–150 whitespace word | — | 代码 `prm/rationale_gen.py::check_rationale` | 报告 §3.5 |
 | QC 不过自动重生成 | 至多 3 次 | `rationale.max_attempts` | 报告预估 ~15% 重生成 |
 
 人工抽检（报告要求，pipeline 不替代）：跑完后抽 500 条查 score 合理性、
@@ -221,18 +335,22 @@ API 调用量级（真实模式）：
 `--mock` 验证链路 → `--n 100` 真实试跑（检查 stats.json 与抽样质量）→
 `--n 1000` → 全量。SDK 自带限速重试；中断直接重跑同一命令即可续上。
 
-注意：报告原设计 weak policy 是**本地 vLLM 跑 Qwen2.5-VL-7B**（零 API 成本）。
-当前按需求用 API 形式实现；全量 60K query × 10 rollout 的 Step 1 API 费用
-不可忽视，放量前先用 100/1000 试跑估算单价，或届时切回服务器本地 policy
-（改 `policy.backend: hf` 即可，接口不变）。
+当前 `config.qwen25vl.yaml` 通过本机 OpenAI 兼容服务调用
+Qwen2.5-VL-7B，Step 1 不产生外部 API 费用；DeepSeek rationale 仍会产生费用。
 
 ---
 
-## verifier 现状（诚实声明）
+## verifier 现状
 
-- `lexical`（默认）：query↔question 的内容词对齐度，离线免费、可复现；
-  **image_search 暂返回中性 0.5**（词法无法判断图像 query）。
-- `api`：LLM judge 打 graded 分，覆盖 image_search，但有成本。
-- 报告 Stage 2 的正式方案（本地 cross-encoder + CLIP matching）待 GPU 服务器
-  上实现后替换——接口已固定为 `GroundingVerifier.score(...)`，到时只加一个
-  backend，不动 pipeline。Stage 0.3（50 样本人工标注一致性）通过后再放量 Step 2。
+verifier 按动作类型分两路：
+
+- `text_search` 使用 `verifier.backend`：`lexical` 为离线内容词对齐，
+  `api` 为 LLM judge。
+- `ocr` 不使用 local verifier，局部分为 null，最终分数只看 outcome credit。
+- `image_search` 使用 `verifier.image_backend`：
+  - `clip`：作者实现的 CLIP 图文对齐评分。计算 query 图像/region 与 question
+    的 cosine，再通过 `cos_lo`、`cos_hi` 校准到 `[0,1]`。
+  - `neutral`：固定 `0.5`，用于 mock 或不希望加载 CLIP 的场景。
+
+默认模型为 `clip-ViT-B-32`。本地 Qwen 配置让 Step 2 CLIP 在 CPU 上运行，
+避免与 Qwen2.5-VL-7B 争用显存。

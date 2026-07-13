@@ -105,3 +105,39 @@ def test_pipeline_end_to_end_mock(cfg):
 def test_step2_requires_step1_output(cfg):
     with pytest.raises(FileNotFoundError):
         step2_score_labels.run(cfg, mock=True)
+
+
+def test_step1_loads_converted_benchmark(cfg, tmp_path):
+    data_dir = tmp_path / "converted"
+    data_dir.mkdir()
+    (data_dir / "queries.jsonl").write_text(
+        json.dumps(
+            {
+                "query_id": "external-1",
+                "question": "Which option is correct?",
+                "gold_answers": ["Alpha"],
+                "image_path": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (data_dir / "corpus.jsonl").write_text(
+        json.dumps(
+            {
+                "doc_id": "external-doc",
+                "title": "Supporting note",
+                "text": "Alpha is the correct option.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cfg["benchmark"] = "scienceqa"
+    cfg["data"] = {"data_dir": str(data_dir), "n_queries": 1, "seed": 0}
+
+    out = step1_gen_trajectories.run(cfg, mock=False, force=True)
+    rows = list(read_jsonl(out))
+
+    assert rows
+    assert rows[0]["query_id"] == "external-1"

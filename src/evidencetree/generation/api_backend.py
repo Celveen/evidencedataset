@@ -22,8 +22,10 @@ from __future__ import annotations
 import base64
 import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlparse
 
 from .base import Generator, GenerationConfig
 
@@ -66,11 +68,22 @@ class APIGenerator(Generator):
                 api_key=api_key, timeout=timeout, max_retries=max_retries
             )
         if self.provider == "openai":
+            import httpx
             import openai
 
+            kwargs: dict[str, Any] = {}
+            if _is_local_base_url(self.base_url):
+                # Local OpenAI-compatible servers such as Qwen run on
+                # 127.0.0.1. Environment proxies can otherwise intercept the
+                # request and return a misleading 502.
+                kwargs["http_client"] = httpx.Client(
+                    trust_env=False,
+                    timeout=timeout,
+                )
             return openai.OpenAI(
                 api_key=api_key, base_url=self.base_url,
                 timeout=timeout, max_retries=max_retries,
+                **kwargs,
             )
         raise ValueError(f"Unknown provider {self.provider!r}.")
 
@@ -78,11 +91,27 @@ class APIGenerator(Generator):
     def generate(
         self, question: str, context_docs: Sequence[str], **kwargs: Any
     ) -> str:
+        attempts = int(self.config.extra.get("request_attempts", 3))
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return self._generate_once(question, context_docs, **kwargs)
+            except Exception as exc:
+                last_exc = exc
+                if attempt + 1 >= attempts:
+                    break
+                time.sleep(min(2.0 * (attempt + 1), 6.0))
+        assert last_exc is not None
+        raise last_exc
+
+    def _generate_once(
+        self, question: str, context_docs: Sequence[str], **kwargs: Any
+    ) -> str:
         user_text = self._build_prompt(question, context_docs)
-        image_path = kwargs.get("image_path")
+        image_paths = _image_paths(kwargs)
         if self.provider == "anthropic":
             content: list[dict] = []
-            if image_path:
+            for image_path in image_paths:
                 media_type, data = _read_image_b64(image_path)
                 content.append({
                     "type": "image",
@@ -99,13 +128,17 @@ class APIGenerator(Generator):
             return resp.content[0].text.strip()
 
         # openai / OpenAI-compatible
-        if image_path:
-            media_type, data = _read_image_b64(image_path)
-            user_content: Any = [
-                {"type": "image_url",
-                 "image_url": {"url": f"data:{media_type};base64,{data}"}},
-                {"type": "text", "text": user_text},
-            ]
+        if image_paths:
+            user_content: Any = []
+            for image_path in image_paths:
+                media_type, data = _read_image_b64(image_path)
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{data}"},
+                    }
+                )
+            user_content.append({"type": "text", "text": user_text})
         else:
             user_content = user_text
         resp = self._client.chat.completions.create(
@@ -128,3 +161,20 @@ def _read_image_b64(path: str) -> tuple[str, str]:
     media_type = mimetypes.guess_type(path)[0] or "image/jpeg"
     data = base64.standard_b64encode(Path(path).read_bytes()).decode("ascii")
     return media_type, data
+
+
+def _image_paths(kwargs: dict[str, Any]) -> list[str]:
+    raw = kwargs.get("image_paths")
+    paths = list(raw) if raw else []
+    single = kwargs.get("image_path")
+    if single:
+        paths.insert(0, single)
+    limit = int(kwargs.get("max_images", 4))
+    return list(dict.fromkeys(str(path) for path in paths if path))[:limit]
+
+
+def _is_local_base_url(base_url: str | None) -> bool:
+    if not base_url:
+        return False
+    host = (urlparse(base_url).hostname or "").lower()
+    return host in {"127.0.0.1", "localhost", "::1"}
