@@ -13,7 +13,6 @@ mcts:                                # Step 1 rollout 设置（语义同 configs
   rollouts: 10                       # P —— 每个 query 至多 ~10 条 trajectory
   max_depth: 3
   top_k_children: 3
-  lam: 0.3
   early_stop_q: 2.0                  # >1 即关闭早停：数据生成要多样轨迹，不要提前停
   seed: 0
 

@@ -51,14 +51,13 @@ def make_tracer():
     def tracer(ev):
         event = ev["event"]
         if event == "rollout_start":
-            print(f"\n{'=' * 78}\nROLLOUT t={ev['t']}  lambda={ev['lam']}")
+            print(f"\n{'=' * 78}\nROLLOUT t={ev['t']}")
         elif event == "select":
-            print("  SELECT (UCT = Q + exploration + lambda*novelty):")
+            print("  SELECT (UCT = Q + c·sqrt(lnN/n)):")
             for cand in ev["candidates"]:
                 print(
                     f"     {cand['action'][:46]:46}  UCT={cand['uct']:.3f} "
                     f"(Q={cand['q']:.2f} N={cand['visits']} "
-                    f"prior={cand['prior']:.2f} nov={cand['novelty']:.1f})"
                 )
             print(f"     -> chosen: {ev['chosen']}")
         elif event == "expand":
@@ -120,7 +119,6 @@ def main() -> int:
         max_depth=3,
         top_k_children=2,
         c_uct=1.0,
-        lam=0.3,
         early_stop_q=2.0,
         seed=0,
     )

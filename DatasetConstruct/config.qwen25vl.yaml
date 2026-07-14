@@ -11,7 +11,6 @@ mcts:
   rollouts: 10
   max_depth: 3
   top_k_children: 3
-  lam: 0.3
   early_stop_q: 2.0
   seed: 0
 

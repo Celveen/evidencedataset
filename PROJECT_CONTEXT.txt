@@ -2953,3 +2953,16 @@ Remote status:
   - The branch was then pushed successfully to `Celveen/EvidenceTree`.
     Source snapshot commit: `6fb93eb` (`Integrate local multimodal dataset
     pipeline`). The local branch now tracks the same-named `origin` branch.
+
+Update 2026-07-14 (unified branch)
+----------------------------------
+Authoritative branch: claude/unified-main-sqj (server SQJ20260713 line
+merged with main). MCTS selection is pure UCB1 (uct.py: Q + c*sqrt(lnN/n),
+unvisited = infinite urgency). Any local greedy _best_child edit
+(S = 0.4P + 0.6Q) must be discarded before checkout. run_inference.py now
+assembles the SAME stack as DatasetConstruct step1: LLMProposer (policy
+VLM proposes actions; heuristic fallback) + optional GatedProposer +
+ClipImageRetriever when retriever.image_search is enabled. Support gate
+(verifier.support: backend/floor/unsupported_threshold + NOT_REQUIRED)
+and action_gate blocks are live in both DatasetConstruct configs and
+configs/mcts.yaml.

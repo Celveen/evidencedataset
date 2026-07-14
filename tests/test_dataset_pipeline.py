@@ -23,7 +23,7 @@ def cfg(tmp_path):
         "benchmark": "infoseek",
         "data": {"data_dir": None, "n_queries": 8, "seed": 0},
         "mcts": {"rollouts": 6, "max_depth": 3, "top_k_children": 3,
-                 "lam": 0.3, "early_stop_q": 2.0, "seed": 0},
+                 "early_stop_q": 2.0, "seed": 0},
         "policy": {"backend": "mock", "mock_accuracy": 0.6, "mock_seed": 0},
         "retriever": {"top_k": 3},
         "verifier": {"backend": "lexical", "alpha": 0.5},
