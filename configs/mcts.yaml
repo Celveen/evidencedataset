@@ -40,3 +40,21 @@ outcome:
 
 output:
   report_dir: data/inference_reports
+
+# ---- 推理侧 policy VLM（与 DatasetConstruct step1 同构；mock 模式自动忽略）----
+policy:
+  backend: api                    # api | hf | mock；服务器上指向本地 vLLM 的 OpenAI 兼容端点
+  provider: openai
+  model: Qwen2.5-VL-7B-Instruct
+  base_url: http://127.0.0.1:8000/v1
+  api_key_env: DASHSCOPE_API_KEY  # 本地 vLLM 任意非空即可
+  max_new_tokens: 256
+  temperature: 0.7
+
+# 启用图检索：在 retriever 块加 image_search: true（需 query 图 + 语料图两侧齐备，
+# 并会用 retriever.clip_model / image_top_k）
+
+action_gate:                      # 可选：按 benchmark 门控动作类型（GatedProposer）
+  enabled: false
+  mode: dataset
+  max_actions: null
