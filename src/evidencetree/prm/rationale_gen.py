@@ -8,16 +8,9 @@ Quality filter (report §3.5, extended): a rationale must
     (a) cite >= 1 evidence_id visible in the sample (state or observation),
     (b) explicitly mention the action type,
     (c) be 30-150 tokens long (whitespace tokens as the proxy),
-    (d) NOT leak the gold answer: no evaluation phrasing ("ground truth",
-        "correct answer", ...) and no gold-answer string that is absent from
-        the sample's visible evidence (quoting the answer FROM cited evidence
-        is legitimate; knowing it without evidence is leakage),
-    (e) end with a ``VERDICT: good|mixed|poor`` line that does not hard-
-        contradict the assigned score (a "good" verdict on a <=0.4 score or a
-        "poor" verdict on a >=0.6 score means rationale and label disagree —
-        training on such pairs teaches the PRM to say one thing and score
-        another). The verdict line is stripped from the stored rationale and
-        kept in ``rationale_verdict``.
+    (d) not leak the gold answer or use evaluation phrasing,
+    (e) end with ``VERDICT: good|mixed|poor`` and keep that verdict consistent
+        with the assigned score.
 Failures are regenerated up to ``max_attempts``; still-failing samples are
 dropped by DatasetConstruct step 4.
 
@@ -51,21 +44,22 @@ Requirements:
 - cite at least one evidence id in square brackets, e.g. [e0];
 - be concrete about how the evidence supports (or fails to support) progress
   toward answering the question;
-- judge the step ONLY from the question, the evidence, and the action — as if
-  the final outcome were still unknown. NEVER mention or hint at a gold /
-  ground-truth answer and never use evaluation language such as "the answer is
-  correct" or "matches the ground truth";
+- judge the step ONLY from the question, the evidence, and the action. Never
+  mention or hint at a gold / ground-truth answer, and never use evaluation
+  language such as "the answer is correct" or "matches the ground truth";
 - if the evidence does not actually support the step's usefulness, say so
   plainly.
-After the rationale, end with ONE final line of exactly this form (it must be
-consistent with the assigned score):
-VERDICT: good     (clearly useful step)   or
-VERDICT: mixed    (partially useful)      or
-VERDICT: poor     (useless or harmful)"""
+After the rationale, end with ONE final line of exactly this form:
+VERDICT: good
+or
+VERDICT: mixed
+or
+VERDICT: poor
+The VERDICT must be consistent with the assigned score.
+Output ONLY the rationale text plus the final VERDICT line."""
 
 _EVIDENCE_ID_RE = re.compile(r"\be\d+\b")
 _VERDICT_RE = re.compile(r"VERDICT:\s*(good|mixed|poor)\b", re.IGNORECASE)
-# Evaluation phrasing that must never appear in a training rationale.
 _LEAK_PHRASES = (
     "gold answer", "ground truth", "ground-truth", "correct answer",
     "标准答案", "参考答案", "正确答案",
@@ -74,7 +68,7 @@ _WORD_RE = re.compile(r"[a-z0-9']+")
 
 
 def split_verdict(text: str) -> tuple[str, str | None]:
-    """Split raw generation into (rationale body, verdict|None)."""
+    """Split raw generation into (rationale body, verdict)."""
     matches = list(_VERDICT_RE.finditer(text))
     if not matches:
         return text.strip(), None
@@ -84,14 +78,14 @@ def split_verdict(text: str) -> tuple[str, str | None]:
 
 
 def _gold_strings(sample: dict[str, Any]) -> list[str]:
-    """Normalize gold answers to comparable strings (>=3 chars, non-boolean)."""
+    """Normalize gold answers to comparable strings."""
     out: list[str] = []
-    for g in sample.get("gold_answers", []) or []:
-        if isinstance(g, dict):
-            g = g.get("wikidata", "")
-        g = str(g).strip().lower()
-        if len(g) >= 3 and g not in {"yes", "no", "none", "true", "false"}:
-            out.append(g)
+    for gold in sample.get("gold_answers", []) or []:
+        if isinstance(gold, dict):
+            gold = gold.get("wikidata", "")
+        gold = str(gold).strip().lower()
+        if len(gold) >= 3 and gold not in {"yes", "no", "none", "true", "false"}:
+            out.append(gold)
     return out
 
 
@@ -102,10 +96,10 @@ def visible_evidence_ids(sample: dict[str, Any]) -> set[str]:
 
 
 def check_rationale(text: str, sample: dict[str, Any]) -> tuple[bool, list[str]]:
-    """Apply the QC rules to a raw generation; return (ok, failure reasons).
+    """Apply rationale QC rules; return (ok, failure reasons).
 
-    ``text`` is the raw model output (verdict line included); length / mention /
-    citation rules run on the body with the verdict line stripped.
+    ``text`` is the raw model output. Length, action mention and citation rules
+    run on the body with the verdict line stripped.
     """
     reasons = []
     body, verdict = split_verdict(text)
@@ -118,12 +112,12 @@ def check_rationale(text: str, sample: dict[str, Any]) -> tuple[bool, list[str]]
     if not (cited & visible_evidence_ids(sample)):
         reasons.append("cites no evidence_id visible in the sample")
 
-    # (d) gold-answer leakage — the rationale must argue ex-ante.
     body_lower = body.lower()
     for phrase in _LEAK_PHRASES:
         if phrase in body_lower:
             reasons.append(f"evaluation phrasing leaks the outcome: {phrase!r}")
             break
+
     visible_text = " ".join(
         e.get("text", "") + " " + e.get("title", "")
         for e in sample["state"].get("evidence_before", [])
@@ -132,8 +126,6 @@ def check_rationale(text: str, sample: dict[str, Any]) -> tuple[bool, list[str]]
         e.get("text", "") + " " + e.get("title", "")
         for e in sample.get("observation_evidence", [])
     )
-    # The action input is part of the sample the PRM sees (for an answer step it
-    # IS the answer under evaluation) — quoting it is not leakage.
     visible_text = (
         visible_text
         + " "
@@ -148,7 +140,6 @@ def check_rationale(text: str, sample: dict[str, Any]) -> tuple[bool, list[str]]
             reasons.append("mentions a gold answer absent from visible evidence")
             break
 
-    # (e) verdict present and not contradicting the score.
     if verdict is None:
         reasons.append("missing VERDICT line")
     else:
@@ -184,7 +175,9 @@ class RationaleGenerator:
         text, ok, reasons, attempts = "", False, ["not attempted"], 0
         for attempts in range(1, self.max_attempts + 1):
             text = (
-                self._mock(sample) if self.backend == "mock" else self._api(sample)
+                self._mock(sample)
+                if self.backend == "mock"
+                else self._api(sample, reasons if attempts > 1 else None)
             )
             ok, reasons = check_rationale(text, sample)
             if ok:
@@ -200,7 +193,9 @@ class RationaleGenerator:
         }
 
     # ------------------------------------------------------------------ #
-    def _api(self, sample: dict[str, Any]) -> str:
+    def _api(
+        self, sample: dict[str, Any], previous_reasons: list[str] | None = None
+    ) -> str:
         state = sample["state"]
         before = "\n".join(
             f"[{e['evidence_id']}] {e['title']}: {e['text']}"
@@ -218,6 +213,13 @@ class RationaleGenerator:
             observation=observation,
             score=float(sample["score"]),
         )
+        if previous_reasons:
+            prompt += (
+                "\n\nThe previous attempt failed validation because: "
+                + "; ".join(previous_reasons)
+                + ". Rewrite it and correct every listed issue. Aim for about "
+                "85 whitespace-separated words."
+            )
         return self.generator.generate(prompt, []).strip()
 
     def _mock(self, sample: dict[str, Any]) -> str:

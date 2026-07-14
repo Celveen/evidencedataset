@@ -9,3 +9,4 @@ sentence-transformers>=2.7   # dense retriever / CLIP image_search (Stage 1+)
 faiss-cpu>=1.7               # vector index (Stage 1+); use faiss-gpu on the server
 einops>=0.7
 pillow>=10.0                 # image handling for multimodal inputs
+chromadb>=1.0                # CRAG-MM official local retrieval indexes

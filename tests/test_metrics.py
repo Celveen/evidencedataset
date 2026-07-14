@@ -28,6 +28,13 @@ def test_f1_no_overlap_is_zero():
     assert metrics.f1_score("apple", "banana") == 0.0
 
 
+def test_infoseek_numeric_range_match():
+    gold = "{'wikidata': 153.0, 'range': [137.7, 168.3]}"
+    assert metrics.exact_match("150 g", [gold]) == 1.0
+    assert metrics.f1_score("150 g", [gold]) == 1.0
+    assert metrics.exact_match("46 g", [gold]) == 0.0
+
+
 def test_aggregate():
     preds = ["Paris", "wrong"]
     refs = ["paris", "Tokyo"]
@@ -41,9 +48,10 @@ _NUMERIC_GOLD = ["{'wikidata': 153.0, 'range': [137.7, 168.3]}"]  # gold as str-
 
 
 def test_infoseek_numeric_in_range_scores_one():
-    # A correct number inside the range; bare EM would (wrongly) give 0.
+    # A correct number inside the range. exact_match is numeric-range-aware
+    # too (server fix), so both metrics accept it.
     assert metrics.infoseek_accuracy("about 150 grams", _NUMERIC_GOLD) == 1.0
-    assert metrics.exact_match("about 150 grams", _NUMERIC_GOLD) == 0.0
+    assert metrics.exact_match("about 150 grams", _NUMERIC_GOLD) == 1.0
 
 
 def test_infoseek_numeric_out_of_range_scores_zero():

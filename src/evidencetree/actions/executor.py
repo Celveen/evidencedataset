@@ -46,10 +46,12 @@ class ActionExecutor:
         text_retriever: TextRetriever | None = None,
         image_retriever: ImageRetriever | None = None,
         top_k: int = 5,
+        image_top_k: int | None = None,
     ) -> None:
         self.text_retriever = text_retriever
         self.image_retriever = image_retriever
         self.top_k = top_k
+        self.image_top_k = image_top_k if image_top_k is not None else top_k
         self._handlers: dict[type[Action], Handler] = {
             TextSearchAction: self._exec_text_search,
             ImageSearchAction: self._exec_image_search,
@@ -95,7 +97,7 @@ class ActionExecutor:
             raise ValueError("image_search with no image: neither the action nor "
                              "the state carries an image_path.")
         hits = self.image_retriever.search_image(
-            image_path, region=action.region, top_k=self.top_k
+            image_path, region=action.region, top_k=self.image_top_k
         )
         return state.advanced(action, self._hits_to_evidence(state, action, hits))
 

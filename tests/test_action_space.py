@@ -74,7 +74,10 @@ def test_action_granularity_and_registry():
     assert TextSearchAction(query="x").granularity == "n/a"
     assert ImageSearchAction().granularity == "whole"
     assert ImageSearchAction(region=(0.1, 0.1, 0.5, 0.5)).granularity == "region"
-    assert set(ACTION_REGISTRY) >= {"text_search", "image_search", "answer"}
+    assert {"text_search", "image_search", "answer"} <= set(ACTION_REGISTRY)
+    assert "ocr" not in ACTION_REGISTRY
+    assert "text_to_image" not in ACTION_REGISTRY
+    assert "image_to_text" not in ACTION_REGISTRY
 
 
 def test_new_action_type_plugs_in_without_rewrite(executor):

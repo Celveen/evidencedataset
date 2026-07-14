@@ -1,40 +1,27 @@
-"""Grounding verifiers: g(action, results) -> float in [0, 1], graded (report §3.2).
+"""Grounding verifiers: g(action, results) -> float in [0, 1], graded.
 
-Grounding measures **how relevant the action's RETRIEVED RESULT is to the
-question** (not whether the action's input aligns with the question — that
-cannot rate image_search whose query image is fixed, and anti-fabrication is
-already handled by the policy prompt). Empty results -> 0.
+Grounding measures how relevant the action's RETRIEVED RESULT is to the
+question. It does not judge whether the action input itself overlaps the
+question; query anti-fabrication belongs to the policy prompt.
 
-UNIFIED CLIP SCORING (so scores are comparable across action types):
-all grounding is a cosine in ONE CLIP embedding space against the SAME anchor
-``CLIP_text(question)``. A text result is embedded with the CLIP text tower, an
-image result with the CLIP image tower. If text and image grounding used two
-different models (e.g. a sentence-transformer for text + CLIP for images), their
-cosine scales would differ and the PRM would mistake the scale gap for a quality
-gap, biasing it toward whichever action type scores systematically higher.
+Unified CLIP scoring:
+all grounding is a cosine in one CLIP embedding space against the same anchor,
+``CLIP_text(question)``. A text result is embedded with the CLIP text tower; an
+image result is embedded with the CLIP image tower. Text and image cosine bands
+are calibrated separately onto [0, 1].
 
-Because same-modality (text-text) cosine runs higher than cross-modality
-(text-image) cosine, each is mapped to [0, 1] by its own ``[cos_lo, cos_hi]``
-band — same model, same anchor, the band just calibrates both cosine
-distributions onto the same "relevance" meaning. Bands are empirical; recalibrate
-from the real cosine distribution on the server.
+Both text_search and image_search may return text-side or image-side documents
+when image_search queries one shared CLIP corpus. Each modality present is
+scored against the question and the best relevance is used. ``answer`` returns
+None because outcome credit decides it.
 
-Scored by the ACTUAL modality of each retrieved result, not the action type:
-a step's results (text_search and image_search both query one shared corpus,
-so either can return text- or image-side docs) are scored per modality and the
-best relevance is taken. ``answer`` -> None (outcome decides).
+With ``clip_scorer=None`` (mock/offline tests), text results fall back to
+lexical question-word recall and image results receive neutral 0.5 when present.
 
-A ``clip_scorer=None`` verifier (mock / offline tests) falls back to lexical
-question-word recall for text results and a neutral 0.5 for image results, so
-the pipeline runs without any model download.
-
-ANSWER SUPPORT (``AnswerSupportVerifier``): grounding never scores the answer
-step, but outcome alone mislabels the "correct answer with no evidence support"
-failure mode (parametric lucky guess) as a perfect action. The support verifier
-checks whether the answer text is actually backed by the accumulated evidence
-bundle: ``lexical`` (offline) matches answer content words/numbers against the
-evidence, ``api`` asks an LLM judge (handles paraphrase and yes/no/absence
-answers). Returns None when it cannot judge (e.g. lexical on a bare yes/no).
+``AnswerSupportVerifier`` is used only for answer steps. Grounding never scores
+answers, so outcome-only labels can accidentally reward a correct but
+unsupported parametric guess. The support verifier checks whether the proposed
+answer is actually backed by the accumulated evidence bundle.
 """
 
 from __future__ import annotations
@@ -65,14 +52,11 @@ def _lexical_recall(question: str, texts: Sequence[str]) -> float:
     return max(len(q & _content_tokens(t)) / len(q) for t in valid)
 
 
-# --------------------------------------------------------------------------- #
-# Unified CLIP grounding scorer
-# --------------------------------------------------------------------------- #
 class ClipGroundingScorer:
-    """Scores text AND image results against the question in one CLIP space.
+    """Scores text and image results against the question in one CLIP space.
 
-    Encoders are injectable (``text_encoder`` / ``image_encoder``: list -> (n,d)
-    array) for tests; the default lazily loads one CLIP model for both towers.
+    Encoders are injectable for deterministic tests; the default lazily loads a
+    sentence-transformers CLIP model for both towers.
     """
 
     def __init__(
@@ -95,7 +79,6 @@ class ClipGroundingScorer:
         self.text_band = text_band
         self.image_band = image_band
 
-    # ------------------------------------------------------------------ #
     def score_text_results(self, question: str, result_texts: Sequence[str]) -> float:
         texts = [t for t in result_texts if t]
         if not texts:
@@ -112,16 +95,15 @@ class ClipGroundingScorer:
         qv = self._encode_text([question])[0]
         best = 0.0
         found = False
-        for p in paths:
+        for path in paths:
             try:
-                iv = self._encode_images([self._open_image(p)])[0]
+                iv = self._encode_images([self._open_image(path)])[0]
             except Exception:  # noqa: BLE001 - skip unreadable image
                 continue
             found = True
             best = max(best, float((iv * qv).sum()))
         return self._map(best, self.image_band) if found else 0.0
 
-    # ------------------------------------------------------------------ #
     @staticmethod
     def _map(cos: float, band: tuple[float, float]) -> float:
         lo, hi = band
@@ -158,14 +140,7 @@ class ClipGroundingScorer:
         return Image.open(path).convert("RGB")
 
 
-# --------------------------------------------------------------------------- #
-# Answer support verifier (answer step: is the answer backed by the evidence?)
-# --------------------------------------------------------------------------- #
-
-# Answers a lexical matcher cannot meaningfully verify against evidence text
-# (absence/boolean answers need entailment, not containment).
 _UNVERIFIABLE_ANSWERS = {"yes", "no", "none", "true", "false", "unknown", "n/a"}
-
 _NUM_TOKEN_RE = re.compile(r"^\d+(?:\.\d+)?$")
 
 _SUPPORT_PROMPT = """Question: {question}
@@ -194,29 +169,18 @@ Classify how this answer relates to the evidence. Reply with exactly one word:
 
 
 class AnswerSupportVerifier:
-    """support(question, answer, evidence) -> [0, 1] or None (cannot judge).
+    """Check whether an answer is supported by the accumulated evidence.
 
-    ``lexical`` backend: fraction of the answer's content words found in the
-    union of evidence texts; when the answer contains numbers, the number match
-    fraction gates the score (min) so "up to 145 grams" cannot pass on the
-    generic words while 145 is nowhere in the evidence. Bare yes/no-style
-    answers return None (containment cannot verify absence claims).
+    ``lexical`` backend is offline and deterministic: answer content words and
+    numbers must appear in the evidence, with unmatched numbers forcing the
+    score down. Bare yes/no answers return None because containment cannot judge
+    absence claims.
 
-    ``api`` backend: LLM judge with four categories —
-    SUPPORTED/PARTIAL/UNSUPPORTED -> 1.0/0.5/0.0, and NOT_REQUIRED -> None for
-    answers derivable from the question + visible image alone (perception /
-    logic / commonsense questions, e.g. ScienceQA reasoning MC): gating those
-    on evidence entailment would systematically punish correct reasoning
-    answers that no document could ever "support". Unparseable replies also
-    return None so the label falls back to outcome-only rather than injecting
-    a fabricated support value.
-
-    Empty evidence -> 0.0 in both backends: answering with nothing retrieved is
-    by definition unsupported.
-
-    ``classify()`` additionally returns the raw label so the dataset can record
-    WHY a support value is null (not_required vs unverifiable vs unparseable) —
-    needed to diagnose distribution shifts across benchmarks.
+    ``api`` backend asks a judge model for SUPPORTED/PARTIAL/UNSUPPORTED/
+    NOT_REQUIRED and maps those to 1.0/0.5/0.0/None. ``NOT_REQUIRED`` means the
+    question is answerable from the question/image alone, so evidence support
+    should not gate the answer score. ``classify`` returns the raw label for
+    diagnostics; ``score`` keeps the older float-or-None API.
     """
 
     def __init__(self, backend: str = "lexical", generator=None) -> None:
@@ -254,7 +218,6 @@ class AnswerSupportVerifier:
             return self._lexical(answer, texts)
         return self._api(question, answer, texts)
 
-    # ------------------------------------------------------------------ #
     def _lexical(self, answer: str, texts: Sequence[str]) -> tuple[str, float | None]:
         if answer.strip().lower() in _UNVERIFIABLE_ANSWERS:
             return ("unverifiable", None)
@@ -262,16 +225,14 @@ class AnswerSupportVerifier:
         if not tokens:
             return ("unverifiable", None)
         evidence_tokens: set[str] = set()
-        for t in texts:
-            evidence_tokens |= _content_tokens(t)
+        for text in texts:
+            evidence_tokens |= _content_tokens(text)
         nums = {t for t in tokens if _NUM_TOKEN_RE.match(t)}
         words = tokens - nums
         word_score = len(words & evidence_tokens) / len(words) if words else 1.0
         if not nums:
             return ("lexical", word_score)
         num_score = len(nums & evidence_tokens) / len(nums)
-        # Numbers are the payload of value-type answers: unmatched numbers must
-        # not be rescued by generic word overlap.
         return ("lexical", min(num_score, word_score) if words else num_score)
 
     def _api(self, question: str, answer: str, texts: Sequence[str]) -> tuple[str, float | None]:
@@ -279,9 +240,10 @@ class AnswerSupportVerifier:
         prompt = _SUPPORT_PROMPT.format(
             question=question, evidence=evidence, answer=answer
         )
-        reply = self.generator.generate(prompt, []).strip().upper()
-        # Order matters: "UNSUPPORTED" contains "SUPPORTED", and NOT_REQUIRED
-        # must win over any other word the judge echoes.
+        try:
+            reply = self.generator.generate(prompt, []).strip().upper()
+        except Exception:  # noqa: BLE001 - keep large batches resumable
+            return ("unparseable", None)
         if "NOT_REQUIRED" in reply or "NOT REQUIRED" in reply:
             return ("not_required", None)
         if "UNSUPPORTED" in reply:
@@ -294,15 +256,7 @@ class AnswerSupportVerifier:
 
 
 class GroundingVerifier:
-    """g(action, results) -> graded relevance of the retrieved result to the
-    question, scored in one unified CLIP space (or lexical/neutral fallback when
-    no clip_scorer is wired).
-
-    Both text_search and image_search query one shared corpus, so a step's
-    results may mix text- and image-side docs. Each modality present is scored
-    against the question and the best (max) relevance is taken — the step is as
-    well-grounded as its most on-topic retrieved result.
-    """
+    """g(action, results) -> relevance of retrieved results to the question."""
 
     def __init__(self, clip_scorer: ClipGroundingScorer | None = None):
         self.clip_scorer = clip_scorer
@@ -314,6 +268,7 @@ class GroundingVerifier:
         action_type: str,
         result_texts: Sequence[str] = (),
         result_image_paths: Sequence[str] = (),
+        **_: object,
     ) -> float | None:
         """Graded grounding score, or None for actions outcome decides."""
         if action_type == "answer":
@@ -327,10 +282,31 @@ class GroundingVerifier:
             if texts:
                 parts.append(_lexical_recall(question, texts))
             if images:
-                parts.append(0.5)  # offline: cannot judge an image
+                parts.append(0.5)
         else:
             if texts:
                 parts.append(self.clip_scorer.score_text_results(question, texts))
             if images:
                 parts.append(self.clip_scorer.score_image_results(question, images))
         return max(parts) if parts else 0.0
+
+
+def grounding_score(action, state, verifier: GroundingVerifier | None = None) -> float | None:
+    """Convenience wrapper over typed Action/SearchState objects."""
+    verifier = verifier or GroundingVerifier()
+    result_texts = [
+        f"{e.title}: {e.text}" if e.title else e.text
+        for e in state.evidence
+        if e.source_action == action.action_type
+    ]
+    result_image_paths = [
+        e.image_path
+        for e in state.evidence
+        if e.source_action == action.action_type and e.image_path
+    ]
+    return verifier.score(
+        question=state.question,
+        action_type=action.action_type,
+        result_texts=result_texts,
+        result_image_paths=result_image_paths,
+    )

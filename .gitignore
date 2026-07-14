@@ -1,6 +1,9 @@
 # Virtual environment
 RAG/
 .venv/
+.venv-qwen25vl/
+.tools/
+.local/tesseract/
 venv/
 
 # Python
@@ -27,8 +30,10 @@ data/inference_reports/*
 *.pt
 *.ckpt
 checkpoints/
+models/
 outputs/
 wandb/
+logs/
 
 # Secrets
 .env
