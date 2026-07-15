@@ -259,7 +259,7 @@ Question: {question}
 Evidence collected so far:
 {evidence}
 
-Propose up to {k} candidate next actions as JSON, one per line. Allowed:
+Propose exactly {k} DISTINCT candidate next actions as JSON, one per line.\nThe candidates are ALTERNATIVE branches of a search tree, not a sequence:\ncover different action types. Returning a single candidate is wrong. Allowed:
 {allowed_actions}
 
 Rules:
@@ -284,6 +284,9 @@ Rules:
   never re-issue a query already executed on this path.
 - Keep every search query faithful to the original question's intent; do not
   drift away from what is actually being asked.
+- Even when you propose answer, ALSO propose the best follow-up text_search
+  as a separate candidate whenever the asked attribute is not literally
+  present in the evidence above.
 - Only answer when the collected evidence actually supports the answer, OR
   when the question is answerable from the image and question alone by
   perception, logic, or everyday commonsense (no external facts needed).
@@ -362,6 +365,22 @@ class LLMProposer:
             # Keep the required visual branch available even when the policy
             # emits only text actions. UCT still decides whether to explore it.
             actions.insert(min(1, len(actions)), image_action)
+        if not any(isinstance(a, TextSearchAction) for a in actions):
+            # Symmetric guarantee for the TEXTUAL branch. The 40q ablation
+            # showed the policy returns a single candidate per expansion
+            # (root: image_search only; post-retrieval: answer only), which
+            # collapses MCTS to branching factor 1 regardless of the scorer.
+            # Never trust the prompt for structure: synthesize the attribute
+            # lookup from the evidence-established title + question keywords
+            # so search vs. answer is ALWAYS a real choice for UCT/the PRM.
+            kq = keyword_query(state.question)
+            titles = [e.title for e in state.evidence if e.title]
+            for cand in (
+                [TextSearchAction(query=f"{titles[0]} {kq}".strip())] if titles and kq else []
+            ) + [TextSearchAction(query=kq or state.question)]:
+                if cand not in taken and cand not in actions:
+                    actions.append(cand)
+                    break
         if not actions:
             return self.fallback.propose(state, k)
         return [a for a in actions if a not in taken][:k]

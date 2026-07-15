@@ -241,3 +241,31 @@ def test_gated_proposer_filters_actions_by_runtime_availability():
         "text_search",
         "answer",
     ]
+
+
+def test_llm_proposer_completes_text_branch_on_single_answer_reply():
+    """40q-ablation regression: a lone answer candidate must be joined by a
+    synthesized text_search so the tree keeps a real search-vs-answer choice."""
+    from evidencetree.actions.action_space import (
+        AnswerAction, Evidence, SearchState, TextSearchAction,
+    )
+    from evidencetree.mcts.proposer import LLMProposer
+
+    class OneAnswerGen:
+        def generate(self, prompt, images, **kw):
+            return '{"type": "answer", "text": "gardening"}'
+
+    state = SearchState(
+        question="What fields does this person work in?",
+        image_path=None,
+        evidence=(Evidence(evidence_id="e0", doc_id="d0",
+                           title="Allan Cunningham", text="botanist page",
+                           step_index=0,
+                           source_action="text_search"),),
+        actions_taken=(TextSearchAction(query="seed"),),
+    )
+    actions = LLMProposer(OneAnswerGen()).propose(state, k=5)
+    types = {type(a) for a in actions}
+    assert AnswerAction in types and TextSearchAction in types
+    ts = [a for a in actions if isinstance(a, TextSearchAction)]
+    assert any("Allan Cunningham" in a.query for a in ts)
