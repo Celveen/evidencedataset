@@ -8,7 +8,9 @@ search:
   max_depth: 3
   top_k_children: 3            # children kept per expansion (PRM-ranked)
   c_uct: 1.0                   # UCB1 exploration constant
-  early_stop_q: 0.9            # tau_stop — stop when a rollout reward exceeds this
+  early_stop_q: 2.0            # tau_stop；>1=禁用。未校准 PRM 的分数无概率意义，0.9 阈值会在
+                               # 第 1 条 rollout 后就终止搜索（Yes-prob 饱和），树根本没机会展开。
+                               # ET-PRM 完成 Stage 4.3 校准后再启用（如 0.9）。
   seed: 0
 
 data:
