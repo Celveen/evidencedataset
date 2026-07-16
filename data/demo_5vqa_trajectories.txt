@@ -1,0 +1,378 @@
+==============================================================================
+5-sample VQA demo — unified CLIP space, REAL MCTSSearcher (rollouts=6, depth=3)
+corpus units: 15 (10 text + 5 image), dedupe=entity
+==============================================================================
+
+QUERY vqa_0: Which city is linked to the red circle in this image?
+  gold=['Paris']  image=query_red_circle.png
+  rollout t=0  reward=1.000  answer='Paris'
+      step 0: text_search('Which city is linked to the red circle in this imag
+        [text] doc_0          score=+0.717  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.507  Photosynthesis converts light energy into chemic
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+      step 1: text_search('city linked red circle this image')
+        [text] doc_0          score=+0.738  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 2: image_search(<state image>, region=None)
+        [image] doc_0          score=+1.000  red circle
+        [image] doc_3          score=+0.101  yellow star
+        [image] doc_2          score=+0.101  green triangle
+      step 3: answer('Paris')
+  rollout t=1  reward=1.000  answer='Paris'
+      step 0: text_search('city linked red circle this image')
+        [text] doc_0          score=+0.738  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 1: answer('Paris')
+  rollout t=2  reward=0.200  answer='Paris'
+      step 0: image_search(<state image>, region=None)
+        [image] doc_0          score=+1.000  red circle
+        [image] doc_3          score=+0.101  yellow star
+        [image] doc_2          score=+0.101  green triangle
+      step 1: answer('Paris')
+  rollout t=3  reward=1.000  answer='Paris'
+      step 0: text_search('Which city is linked to the red circle in this imag
+        [text] doc_0          score=+0.717  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.507  Photosynthesis converts light energy into chemic
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+      step 1: answer('Paris')
+  rollout t=4  reward=1.000  answer='Paris'
+      step 0: text_search('city linked red circle this image')
+        [text] doc_0          score=+0.738  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 1: text_search('Which city is linked to the red circle in this imag
+        [text] doc_0          score=+0.717  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.507  Photosynthesis converts light energy into chemic
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+      step 2: answer('Paris')
+  rollout t=5  reward=1.000  answer='Paris'
+      step 0: text_search('Which city is linked to the red circle in this imag
+        [text] doc_0          score=+0.717  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.507  Photosynthesis converts light energy into chemic
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+      step 1: text_search('city linked red circle this image')
+        [text] doc_0          score=+0.738  The red circle emblem is kept in Paris.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 2: answer('Paris')
+  TREE (visits, mean Q):
+    - text_search('Which city is linked to the red circle in thi N=3  Q=1.000
+      - answer('Paris')                                            N=1  Q=1.000
+      - text_search('city linked red circle this image')           N=1  Q=1.000
+        - answer('Paris')                                            N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - text_search('city linked red circle this image')           N=2  Q=1.000
+      - answer('Paris')                                            N=1  Q=1.000
+      - text_search('Which city is linked to the red circle in thi N=1  Q=1.000
+        - answer('Paris')                                            N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - image_search(<state image>, region=None)                   N=1  Q=0.200
+      - answer('Paris')                                            N=1  Q=0.200
+      - text_search('Which city is linked to the red circle in thi N=0  Q=0.000
+      - text_search('city linked red circle this image')           N=0  Q=0.000
+  BEST PATH (reward=1.000): text_search('Which city is linked to the red -> text_search('city linked red circle this ima -> image_search(<state image>, region=None) -> answer('Paris')
+  FINAL answer='Paris'  correct=True
+
+QUERY vqa_1: Which city is linked to the blue square in this image?
+  gold=['Tokyo']  image=query_blue_square.png
+  rollout t=0  reward=1.000  answer='Tokyo'
+      step 0: text_search('Which city is linked to the blue square in this ima
+        [text] doc_1          score=+0.799  The blue square banner was made in Tokyo.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.485  Photosynthesis converts light energy into chemic
+      step 1: text_search('city linked blue square this image')
+        [text] doc_1          score=+0.791  The blue square banner was made in Tokyo.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+      step 2: image_search(<state image>, region=None)
+        [image] doc_1          score=+1.000  blue square
+        [image] doc_3          score=+0.065  yellow star
+        [image] doc_2          score=+0.065  green triangle
+      step 3: answer('Tokyo')
+  rollout t=1  reward=1.000  answer='Tokyo'
+      step 0: text_search('city linked blue square this image')
+        [text] doc_1          score=+0.791  The blue square banner was made in Tokyo.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+      step 1: answer('Tokyo')
+  rollout t=2  reward=0.200  answer='Tokyo'
+      step 0: image_search(<state image>, region=None)
+        [image] doc_1          score=+1.000  blue square
+        [image] doc_3          score=+0.065  yellow star
+        [image] doc_2          score=+0.065  green triangle
+      step 1: answer('Tokyo')
+  rollout t=3  reward=1.000  answer='Tokyo'
+      step 0: text_search('Which city is linked to the blue square in this ima
+        [text] doc_1          score=+0.799  The blue square banner was made in Tokyo.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.485  Photosynthesis converts light energy into chemic
+      step 1: answer('Tokyo')
+  rollout t=4  reward=1.000  answer='Tokyo'
+      step 0: text_search('city linked blue square this image')
+        [text] doc_1          score=+0.791  The blue square banner was made in Tokyo.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+      step 1: text_search('Which city is linked to the blue square in this ima
+        [text] doc_1          score=+0.799  The blue square banner was made in Tokyo.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.485  Photosynthesis converts light energy into chemic
+      step 2: answer('Tokyo')
+  rollout t=5  reward=1.000  answer='Tokyo'
+      step 0: text_search('Which city is linked to the blue square in this ima
+        [text] doc_1          score=+0.799  The blue square banner was made in Tokyo.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.485  Photosynthesis converts light energy into chemic
+      step 1: text_search('city linked blue square this image')
+        [text] doc_1          score=+0.791  The blue square banner was made in Tokyo.
+        [text] distractor_0   score=+0.373  Photosynthesis converts light energy into chemic
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+      step 2: answer('Tokyo')
+  TREE (visits, mean Q):
+    - text_search('Which city is linked to the blue square in th N=3  Q=1.000
+      - answer('Tokyo')                                            N=1  Q=1.000
+      - text_search('city linked blue square this image')          N=1  Q=1.000
+        - answer('Tokyo')                                            N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - text_search('city linked blue square this image')          N=2  Q=1.000
+      - answer('Tokyo')                                            N=1  Q=1.000
+      - text_search('Which city is linked to the blue square in th N=1  Q=1.000
+        - answer('Tokyo')                                            N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - image_search(<state image>, region=None)                   N=1  Q=0.200
+      - answer('Tokyo')                                            N=1  Q=0.200
+      - text_search('Which city is linked to the blue square in th N=0  Q=0.000
+      - text_search('city linked blue square this image')          N=0  Q=0.000
+  BEST PATH (reward=1.000): text_search('Which city is linked to the blu -> text_search('city linked blue square this im -> image_search(<state image>, region=None) -> answer('Tokyo')
+  FINAL answer='Tokyo'  correct=True
+
+QUERY vqa_2: Which city is linked to the green triangle in this image?
+  gold=['Cairo']  image=query_green_triangle.png
+  rollout t=0  reward=1.000  answer='Cairo'
+      step 0: text_search('Which city is linked to the green triangle in this 
+        [text] doc_2          score=+0.646  The green triangle flag flies over Cairo.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.438  The blue square banner was made in Tokyo.
+      step 1: text_search('city linked green triangle this image')
+        [text] doc_2          score=+0.804  The green triangle flag flies over Cairo.
+        [text] doc_1          score=+0.264  The blue square banner was made in Tokyo.
+        [text] doc_4          score=+0.251  The purple hexagon crest belongs to Berlin.
+      step 2: image_search(<state image>, region=None)
+        [image] doc_2          score=+1.000  green triangle
+        [image] doc_3          score=+0.163  yellow star
+        [image] doc_4          score=+0.104  purple hexagon
+      step 3: answer('Cairo')
+  rollout t=1  reward=1.000  answer='Cairo'
+      step 0: text_search('city linked green triangle this image')
+        [text] doc_2          score=+0.804  The green triangle flag flies over Cairo.
+        [text] doc_1          score=+0.264  The blue square banner was made in Tokyo.
+        [text] doc_4          score=+0.251  The purple hexagon crest belongs to Berlin.
+      step 1: answer('Cairo')
+  rollout t=2  reward=0.200  answer='Cairo'
+      step 0: image_search(<state image>, region=None)
+        [image] doc_2          score=+1.000  green triangle
+        [image] doc_3          score=+0.163  yellow star
+        [image] doc_4          score=+0.104  purple hexagon
+      step 1: answer('Cairo')
+  rollout t=3  reward=1.000  answer='Cairo'
+      step 0: text_search('Which city is linked to the green triangle in this 
+        [text] doc_2          score=+0.646  The green triangle flag flies over Cairo.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.438  The blue square banner was made in Tokyo.
+      step 1: answer('Cairo')
+  rollout t=4  reward=1.000  answer='Cairo'
+      step 0: text_search('city linked green triangle this image')
+        [text] doc_2          score=+0.804  The green triangle flag flies over Cairo.
+        [text] doc_1          score=+0.264  The blue square banner was made in Tokyo.
+        [text] doc_4          score=+0.251  The purple hexagon crest belongs to Berlin.
+      step 1: text_search('Which city is linked to the green triangle in this 
+        [text] doc_2          score=+0.646  The green triangle flag flies over Cairo.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.438  The blue square banner was made in Tokyo.
+      step 2: answer('Cairo')
+  rollout t=5  reward=1.000  answer='Cairo'
+      step 0: text_search('Which city is linked to the green triangle in this 
+        [text] doc_2          score=+0.646  The green triangle flag flies over Cairo.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.438  The blue square banner was made in Tokyo.
+      step 1: text_search('city linked green triangle this image')
+        [text] doc_2          score=+0.804  The green triangle flag flies over Cairo.
+        [text] doc_1          score=+0.264  The blue square banner was made in Tokyo.
+        [text] doc_4          score=+0.251  The purple hexagon crest belongs to Berlin.
+      step 2: answer('Cairo')
+  TREE (visits, mean Q):
+    - text_search('Which city is linked to the green triangle in N=3  Q=1.000
+      - answer('Cairo')                                            N=1  Q=1.000
+      - text_search('city linked green triangle this image')       N=1  Q=1.000
+        - answer('Cairo')                                            N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - text_search('city linked green triangle this image')       N=2  Q=1.000
+      - answer('Cairo')                                            N=1  Q=1.000
+      - text_search('Which city is linked to the green triangle in N=1  Q=1.000
+        - answer('Cairo')                                            N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - image_search(<state image>, region=None)                   N=1  Q=0.200
+      - answer('Cairo')                                            N=1  Q=0.200
+      - text_search('Which city is linked to the green triangle in N=0  Q=0.000
+      - text_search('city linked green triangle this image')       N=0  Q=0.000
+  BEST PATH (reward=1.000): text_search('Which city is linked to the gre -> text_search('city linked green triangle this -> image_search(<state image>, region=None) -> answer('Cairo')
+  FINAL answer='Cairo'  correct=True
+
+QUERY vqa_3: Which city is linked to the yellow star in this image?
+  gold=['Rome']  image=query_yellow_star.png
+  rollout t=0  reward=1.000  answer='Rome'
+      step 0: text_search('Which city is linked to the yellow star in this ima
+        [text] doc_3          score=+0.694  The yellow star medal is awarded in Rome.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.451  Photosynthesis converts light energy into chemic
+      step 1: text_search('city linked yellow star this image')
+        [text] doc_3          score=+0.714  The yellow star medal is awarded in Rome.
+        [text] distractor_0   score=+0.298  Photosynthesis converts light energy into chemic
+        [text] doc_1          score=+0.211  The blue square banner was made in Tokyo.
+      step 2: image_search(<state image>, region=None)
+        [image] doc_3          score=+0.999  yellow star
+        [image] doc_2          score=+0.171  green triangle
+        [image] doc_4          score=+0.110  purple hexagon
+      step 3: answer('Rome')
+  rollout t=1  reward=1.000  answer='Rome'
+      step 0: text_search('city linked yellow star this image')
+        [text] doc_3          score=+0.714  The yellow star medal is awarded in Rome.
+        [text] distractor_0   score=+0.298  Photosynthesis converts light energy into chemic
+        [text] doc_1          score=+0.211  The blue square banner was made in Tokyo.
+      step 1: answer('Rome')
+  rollout t=2  reward=0.200  answer='Rome'
+      step 0: image_search(<state image>, region=None)
+        [image] doc_3          score=+0.999  yellow star
+        [image] doc_2          score=+0.171  green triangle
+        [image] doc_4          score=+0.110  purple hexagon
+      step 1: answer('Rome')
+  rollout t=3  reward=1.000  answer='Rome'
+      step 0: text_search('Which city is linked to the yellow star in this ima
+        [text] doc_3          score=+0.694  The yellow star medal is awarded in Rome.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.451  Photosynthesis converts light energy into chemic
+      step 1: answer('Rome')
+  rollout t=4  reward=1.000  answer='Rome'
+      step 0: text_search('city linked yellow star this image')
+        [text] doc_3          score=+0.714  The yellow star medal is awarded in Rome.
+        [text] distractor_0   score=+0.298  Photosynthesis converts light energy into chemic
+        [text] doc_1          score=+0.211  The blue square banner was made in Tokyo.
+      step 1: text_search('Which city is linked to the yellow star in this ima
+        [text] doc_3          score=+0.694  The yellow star medal is awarded in Rome.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.451  Photosynthesis converts light energy into chemic
+      step 2: answer('Rome')
+  rollout t=5  reward=1.000  answer='Rome'
+      step 0: text_search('Which city is linked to the yellow star in this ima
+        [text] doc_3          score=+0.694  The yellow star medal is awarded in Rome.
+        [text] distractor_3   score=+0.463  Classical music flourished in Europe for two cen
+        [text] distractor_0   score=+0.451  Photosynthesis converts light energy into chemic
+      step 1: text_search('city linked yellow star this image')
+        [text] doc_3          score=+0.714  The yellow star medal is awarded in Rome.
+        [text] distractor_0   score=+0.298  Photosynthesis converts light energy into chemic
+        [text] doc_1          score=+0.211  The blue square banner was made in Tokyo.
+      step 2: answer('Rome')
+  TREE (visits, mean Q):
+    - text_search('Which city is linked to the yellow star in th N=3  Q=1.000
+      - answer('Rome')                                             N=1  Q=1.000
+      - text_search('city linked yellow star this image')          N=1  Q=1.000
+        - answer('Rome')                                             N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - text_search('city linked yellow star this image')          N=2  Q=1.000
+      - answer('Rome')                                             N=1  Q=1.000
+      - text_search('Which city is linked to the yellow star in th N=1  Q=1.000
+        - answer('Rome')                                             N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - image_search(<state image>, region=None)                   N=1  Q=0.200
+      - answer('Rome')                                             N=1  Q=0.200
+      - text_search('Which city is linked to the yellow star in th N=0  Q=0.000
+      - text_search('city linked yellow star this image')          N=0  Q=0.000
+  BEST PATH (reward=1.000): text_search('Which city is linked to the yel -> text_search('city linked yellow star this im -> image_search(<state image>, region=None) -> answer('Rome')
+  FINAL answer='Rome'  correct=True
+
+QUERY vqa_4: Which city is linked to the purple hexagon in this image?
+  gold=['Berlin']  image=query_purple_hexagon.png
+  rollout t=0  reward=1.000  answer='Berlin'
+      step 0: text_search('Which city is linked to the purple hexagon in this 
+        [text] doc_4          score=+0.762  The purple hexagon crest belongs to Berlin.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.381  The blue square banner was made in Tokyo.
+      step 1: text_search('city linked purple hexagon this image')
+        [text] doc_4          score=+0.804  The purple hexagon crest belongs to Berlin.
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 2: image_search(<state image>, region=None)
+        [image] doc_4          score=+1.000  purple hexagon
+        [image] doc_3          score=+0.101  yellow star
+        [image] doc_2          score=+0.101  green triangle
+      step 3: answer('Berlin')
+  rollout t=1  reward=1.000  answer='Berlin'
+      step 0: text_search('city linked purple hexagon this image')
+        [text] doc_4          score=+0.804  The purple hexagon crest belongs to Berlin.
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 1: answer('Berlin')
+  rollout t=2  reward=0.200  answer='Berlin'
+      step 0: image_search(<state image>, region=None)
+        [image] doc_4          score=+1.000  purple hexagon
+        [image] doc_3          score=+0.101  yellow star
+        [image] doc_2          score=+0.101  green triangle
+      step 1: answer('Berlin')
+  rollout t=3  reward=1.000  answer='Berlin'
+      step 0: text_search('Which city is linked to the purple hexagon in this 
+        [text] doc_4          score=+0.762  The purple hexagon crest belongs to Berlin.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.381  The blue square banner was made in Tokyo.
+      step 1: answer('Berlin')
+  rollout t=4  reward=1.000  answer='Berlin'
+      step 0: text_search('city linked purple hexagon this image')
+        [text] doc_4          score=+0.804  The purple hexagon crest belongs to Berlin.
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 1: text_search('Which city is linked to the purple hexagon in this 
+        [text] doc_4          score=+0.762  The purple hexagon crest belongs to Berlin.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.381  The blue square banner was made in Tokyo.
+      step 2: answer('Berlin')
+  rollout t=5  reward=1.000  answer='Berlin'
+      step 0: text_search('Which city is linked to the purple hexagon in this 
+        [text] doc_4          score=+0.762  The purple hexagon crest belongs to Berlin.
+        [text] distractor_3   score=+0.516  Classical music flourished in Europe for two cen
+        [text] doc_1          score=+0.381  The blue square banner was made in Tokyo.
+      step 1: text_search('city linked purple hexagon this image')
+        [text] doc_4          score=+0.804  The purple hexagon crest belongs to Berlin.
+        [text] doc_2          score=+0.302  The green triangle flag flies over Cairo.
+        [text] distractor_4   score=+0.274  The history of cartography spans thousands of ye
+      step 2: answer('Berlin')
+  TREE (visits, mean Q):
+    - text_search('Which city is linked to the purple hexagon in N=3  Q=1.000
+      - answer('Berlin')                                           N=1  Q=1.000
+      - text_search('city linked purple hexagon this image')       N=1  Q=1.000
+        - answer('Berlin')                                           N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - text_search('city linked purple hexagon this image')       N=2  Q=1.000
+      - answer('Berlin')                                           N=1  Q=1.000
+      - text_search('Which city is linked to the purple hexagon in N=1  Q=1.000
+        - answer('Berlin')                                           N=1  Q=1.000
+        - image_search(<state image>, region=None)                   N=0  Q=0.000
+      - image_search(<state image>, region=None)                   N=0  Q=0.000
+    - image_search(<state image>, region=None)                   N=1  Q=0.200
+      - answer('Berlin')                                           N=1  Q=0.200
+      - text_search('Which city is linked to the purple hexagon in N=0  Q=0.000
+      - text_search('city linked purple hexagon this image')       N=0  Q=0.000
+  BEST PATH (reward=1.000): text_search('Which city is linked to the pur -> text_search('city linked purple hexagon this -> image_search(<state image>, region=None) -> answer('Berlin')
+  FINAL answer='Berlin'  correct=True
+
+==============================================================================
+SUMMARY: 5/5 correct | modalities retrieved: ['image', 'text'] | trees with BOTH search branches: 5/5
+==============================================================================
