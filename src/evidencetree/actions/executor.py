@@ -120,6 +120,7 @@ class ActionExecutor:
                 title=getattr(h, "title", ""),
                 image_path=getattr(h, "image_path", None),
                 score=float(getattr(h, "score", 0.0)),
+                result_modality=getattr(h, "result_modality", None),
             )
             for i, h in enumerate(hits)
         ]

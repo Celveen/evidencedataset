@@ -198,7 +198,8 @@ def iter_label_steps(
                          "title": e.get("title", ""),
                          "text": e["text"],
                          "image_path": e.get("image_path"),
-                         "score": e.get("score")}
+                         "score": e.get("score"),
+                         "result_modality": e.get("result_modality")}
                         for e in evidence_before
                     ],
                 },
@@ -211,7 +212,8 @@ def iter_label_steps(
                      "title": e.get("title", ""),
                      "text": e["text"],
                      "image_path": e.get("image_path"),
-                     "score": e.get("score")}
+                     "score": e.get("score"),
+                     "result_modality": e.get("result_modality")}
                     for e in step.get("evidence", [])
                 ],
                 "local_grounding": local,

@@ -66,6 +66,7 @@ JSONL，每行一个 UTF-8 JSON 对象。
 | `text` | str | 文档/片段正文 |
 | `image_path` | str\|null | 图像侧结果的相对 key（图像 grounding 用） |
 | `score` | float | 检索器相似度（轨迹内含；样本快照可省） |
+| `result_modality` | str\|null | 检索单元的实际模态：`text` \| `image`；统一 CLIP 索引下 text/image 单元各自独立入库，一次检索可混合返回两种模态。`null` = 旧版 doc 级检索器产出（无单元模态） |
 
 ### 1.4 `gen_provenance`（发布必填）
 

@@ -28,12 +28,18 @@ from pathlib import Path
 
 @dataclass
 class Document:
-    """A retrievable corpus item (text, optionally with an associated image)."""
+    """A retrievable corpus item (text, optionally with an associated image).
+
+    ``entity_id`` optionally names the entity the item is about; the unified
+    retriever uses it to dedupe per-entity duplicate units (the same entity
+    image attached to many chunks) before truncating to top-k.
+    """
 
     doc_id: str
     text: str
     title: str = ""
     image_path: str | None = None
+    entity_id: str | None = None
 
 
 @dataclass
@@ -118,6 +124,7 @@ def _load_infoseek_real(
             text=obj["text"],
             title=obj.get("title", ""),
             image_path=obj.get("image_path"),
+            entity_id=obj.get("entity_id"),
         )
         for obj in _read_jsonl(corpus_path)
     ]
@@ -158,6 +165,7 @@ def _load_jsonl_benchmark(
             text=obj["text"],
             title=obj.get("title", ""),
             image_path=obj.get("image_path"),
+            entity_id=obj.get("entity_id"),
         )
         for obj in _read_jsonl(corpus_path)
     ]

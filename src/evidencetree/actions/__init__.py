@@ -23,7 +23,9 @@ from .retrievers import (
     CragImageRetriever,
     CragWebRetriever,
     DenseRetriever,
+    HybridTextRetriever,
     RetrievalHit,
+    UnifiedClipRetriever,
 )
 
 __all__ = [
@@ -37,9 +39,11 @@ __all__ = [
     "CragWebRetriever",
     "DenseRetriever",
     "Evidence",
+    "HybridTextRetriever",
     "ImageSearchAction",
     "RetrievalHit",
     "SearchState",
     "TextSearchAction",
+    "UnifiedClipRetriever",
     "register_action",
 ]

@@ -128,6 +128,9 @@ class Evidence:
     title: str = ""
     image_path: str | None = None
     score: float = 0.0
+    result_modality: str | None = None  # modality of the retrieved unit
+                                        # ("text" | "image"; None = legacy
+                                        # doc-level retriever)
 
 
 @dataclass(frozen=True)
