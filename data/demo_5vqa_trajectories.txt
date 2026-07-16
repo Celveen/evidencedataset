@@ -1,5 +1,6 @@
 ==============================================================================
 5-sample VQA demo — unified CLIP space, REAL MCTSSearcher (rollouts=6, depth=3)
+proposer=heuristic (llm = real LLMProposer + scripted VLM) | scorer=overlap
 corpus units: 15 (10 text + 5 image), dedupe=entity
 ==============================================================================
 

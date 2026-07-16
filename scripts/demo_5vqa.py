@@ -14,18 +14,33 @@ deterministic stand-ins so nothing is downloaded:
   hashed bag-of-words block; both towers project to one 32-dim space and are
   L2-normalized by the retriever.
 
-Policy = HeuristicProposer + mock generator with reference hints (assembled by
-build_search_stack in mock mode). For every query the script prints the full
-tree trajectories: each rollout's action sequence with per-step retrieved
-units (modality tags), node Q values, and the best path; output is saved to
-data/demo_5vqa_trajectories.txt.
+Two policy modes (--proposer):
+
+* heuristic (default) — HeuristicProposer + mock generator (assembled by
+  build_search_stack in mock mode). No VLM: fixed template proposals.
+* llm — the REAL LLMProposer code path (prompt build -> JSON parse -> dedupe
+  -> unconditional image/text branch guarantees) driven by a scripted VLM
+  stand-in that reproduces the collapse bias observed on the server (root:
+  image_search only; after evidence: answer only). The demo then shows the
+  guarantees turning that single-candidate policy into a branching tree.
+  On the server the same LLMProposer is driven by Qwen2.5-VL instead.
+
+Scorer (--scorer): overlap (default) or visualprm — the latter runs
+VisualPRMScorer in mock mode to validate the PRM wiring end to end (on the
+server the same flag loads the real / fine-tuned VisualPRM-8B).
+
+For every query the script prints the full tree trajectories: each rollout's
+action sequence with per-step retrieved units (modality tags), node Q values,
+and the best path; output is saved to data/demo_5vqa_trajectories[_llm].txt.
 
 Usage:
     python scripts/demo_5vqa.py
+    python scripts/demo_5vqa.py --proposer llm --scorer visualprm
 """
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 import tempfile
@@ -40,6 +55,8 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from evidencetree.eval.benchmarks import Document, Query  # noqa: E402
+from evidencetree.generation.base import GenerationConfig, Generator  # noqa: E402
+from evidencetree.mcts import LLMProposer  # noqa: E402
 from evidencetree.pipeline import build_search_stack  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,6 +173,44 @@ def build_world(tmp: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Scripted VLM (llm mode): drive the REAL LLMProposer path offline
+# --------------------------------------------------------------------------- #
+_CITIES = [e[2] for e in _ENTITIES]
+
+
+class ScriptedVLM(Generator):
+    """Deterministic stand-in for the policy VLM (Qwen2.5-VL on the server).
+
+    Reproduces the single-candidate collapse bias measured in the 40q/200q
+    server ablations so the demo exercises LLMProposer's structural
+    guarantees: with no evidence it proposes ONLY image_search; once any
+    evidence exists it proposes ONLY answer. Answer text is read from the
+    evidence (never from gold), like a faithful evidence-grounded policy.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(GenerationConfig(backend="mock", model="scripted-vlm"))
+
+    def generate(self, question, context_docs, **kwargs) -> str:
+        if "Propose exactly" in question:  # LLMProposer's action-proposal prompt
+            if "Evidence collected so far:\n(none)" in question:
+                return '{"type": "image_search"}'
+            return f'{{"type": "answer", "text": "{self._answer(question)}"}}'
+        # answer drafting (LLMProposer.propose_answer / simulation)
+        return self._answer("\n".join(context_docs))
+
+    @staticmethod
+    def _answer(visible_text: str) -> str:
+        # Read the answer out of the highest-ranked evidence line that names a
+        # city (evidence lines arrive in retrieval-rank order).
+        for line in visible_text.splitlines():
+            for city in _CITIES:
+                if city in line:
+                    return city
+        return "unknown"
+
+
+# --------------------------------------------------------------------------- #
 # Reporting helpers
 # --------------------------------------------------------------------------- #
 def _fmt_evidence(state, step_index: int) -> list[str]:
@@ -180,7 +235,14 @@ def _walk_tree(node, out: list[str], depth: int = 0) -> None:
         _walk_tree(child, out, depth + 1)
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--proposer", choices=("heuristic", "llm"), default="heuristic",
+                    help="llm = real LLMProposer path driven by a scripted VLM")
+    ap.add_argument("--scorer", choices=("overlap", "visualprm"), default="overlap",
+                    help="visualprm = VisualPRMScorer (mock) to validate PRM wiring")
+    args = ap.parse_args(argv)
+
     tmp = Path(tempfile.mkdtemp(prefix="demo5vqa_"))
     queries, corpus = build_world(tmp)
 
@@ -191,11 +253,19 @@ def main() -> int:
         "policy": {"backend": "mock", "mock_accuracy": 1.0, "mock_seed": 0},
         "mcts": {"rollouts": 6, "max_depth": 3, "top_k_children": 3,
                  "early_stop_q": 2.0, "seed": 0},
-        "prm": {"scorer": "overlap"},
+        "prm": {"scorer": args.scorer},
     }
     searcher = build_search_stack(
         cfg, queries, corpus, mock=True, benchmark="demo5vqa",
         text_encoder=text_encoder, image_encoder=image_encoder,
+    )
+    if args.proposer == "llm":
+        # Same LLMProposer class + code path as real inference/step1; only the
+        # generator is the scripted VLM instead of Qwen2.5-VL.
+        searcher.proposer = LLMProposer(ScriptedVLM(), enable_image_search=True)
+
+    out_path = OUT_PATH if args.proposer == "heuristic" else (
+        OUT_PATH.with_name(OUT_PATH.stem + "_llm" + OUT_PATH.suffix)
     )
 
     lines: list[str] = []
@@ -206,6 +276,8 @@ def main() -> int:
     lines.append("=" * 78)
     lines.append("5-sample VQA demo — unified CLIP space, REAL MCTSSearcher "
                  "(rollouts=6, depth=3)")
+    lines.append(f"proposer={args.proposer} (llm = real LLMProposer + scripted "
+                 f"VLM) | scorer={args.scorer}")
     lines.append(f"corpus units: {len(searcher.executor.text_retriever)} "
                  f"({searcher.executor.text_retriever.text_unit_count} text + "
                  f"{searcher.executor.text_retriever.image_unit_count} image), "
@@ -249,9 +321,9 @@ def main() -> int:
 
     report = "\n".join(lines)
     print(report)
-    OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(report + "\n", encoding="utf-8")
-    print(f"\nSaved: {OUT_PATH}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(report + "\n", encoding="utf-8")
+    print(f"\nSaved: {out_path}")
 
     # Health assertions (the point of the demo)
     assert seen_modalities == {"text", "image"}, (
