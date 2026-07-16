@@ -2,8 +2,9 @@
 
 This is a deterministic, no-download debug script. It simulates the current
 dataset-construction setting: a query with an image, a corpus mixing text and
-image documents, and a shared CLIP image_search index. It prints selection UCT
-scores, expansion priors, simulation actions, and backup values.
+image units, and ONE unified CLIP index (text and image units independently
+indexed; both search actions return mixed-modality hits). It prints selection
+UCT scores, expansion priors, simulation actions, and backup values.
 
 Usage:
     python DatasetConstruct/trace_trajectory.py
@@ -17,11 +18,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from evidencetree.actions import (
-    ActionExecutor,
-    BM25Retriever,
-    ClipImageRetriever,
-)
+from evidencetree.actions import ActionExecutor, UnifiedClipRetriever
 from evidencetree.eval.benchmarks import Document
 from evidencetree.generation import build_generator
 from evidencetree.mcts import HeuristicProposer, MCTSSearcher, SearchConfig
@@ -100,12 +97,11 @@ def main() -> int:
         Document(doc_id="txt_fish", title="Blue tang", text="The blue tang is a fish."),
         Document(doc_id="img_fish", title="fish photo", text="", image_path=str(fish_c)),
     ]
-    text_ret = BM25Retriever().build(corpus)
-    img_ret = ClipImageRetriever(
-        encoder=_txt_enc,
+    unified = UnifiedClipRetriever(
+        text_encoder=_txt_enc,
         image_encoder=_img_enc,
     ).build(corpus)
-    executor = ActionExecutor(text_retriever=text_ret, image_retriever=img_ret, top_k=2)
+    executor = ActionExecutor(text_retriever=unified, image_retriever=unified, top_k=2)
 
     gen = build_generator({"backend": "mock", "mock_accuracy": 1.0, "mock_seed": 0})
     proposer = HeuristicProposer(

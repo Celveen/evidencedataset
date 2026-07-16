@@ -1,6 +1,7 @@
 """Step 1 — policy VLM 在每个 query 上跑 MCTS，生成 trajectories。
 
-复用主框架：MCTSSearcher + LLMProposer(API policy) / HeuristicProposer(mock)。
+搜索栈由 evidencetree.pipeline.build_search_stack 统一装配（与
+scripts/run_inference.py 完全同一条装配路径，杜绝两处漂移）。
 每条 rollout 的终态轨迹都被收集（不止最优那条），写入 trajectories JSONL。
 断点续跑：输出文件里已有的 query_id 自动跳过（--force 重跑全部）。
 
@@ -17,197 +18,12 @@ from typing import Any
 
 from common import append_jsonl, load_env, read_jsonl, resolve, tagged
 
-from evidencetree.actions import (
-    ActionExecutor,
-    BM25Retriever,
-    ClipImageRetriever,
-)
 from evidencetree.eval import benchmarks, metrics
-from evidencetree.generation import build_generator
-from evidencetree.mcts import HeuristicProposer, LLMProposer, MCTSSearcher, SearchConfig
-from evidencetree.mcts.proposer import GatedProposer
-from evidencetree.prm.model import HeuristicOverlapScorer
+from evidencetree.pipeline import build_search_stack
 from evidencetree.utils import config as cfgutil
 from evidencetree.utils import get_logger
 
 log = get_logger("dataset.step1")
-
-
-def _build_local_image_retriever(cfg, corpus, image_cfg):
-    data_dir = Path(cfg.get("data", {}).get("data_dir") or ".")
-    index_value = image_cfg.get("index_dir")
-    index_dir = Path(index_value) if index_value else data_dir / "clip_index"
-    model_name = str(image_cfg.get("model_name", "clip-ViT-B-32"))
-    device = image_cfg.get("device", "cpu")
-    batch_size = int(image_cfg.get("batch_size", 32))
-    index_files_exist = (
-        (index_dir / "index.faiss").exists()
-        and (index_dir / "docs.jsonl").exists()
-    )
-    if index_files_exist:
-        loaded = ClipImageRetriever.load(
-            index_dir,
-            model_name=model_name,
-            device=device,
-        )
-        if len(loaded) == len(corpus):
-            log.info("Loaded cached CLIP image index: %s", index_dir)
-            return loaded
-        log.warning(
-            "Ignoring stale CLIP index (%d docs, corpus has %d): %s",
-            len(loaded),
-            len(corpus),
-            index_dir,
-        )
-
-    retriever = ClipImageRetriever(
-        model_name=model_name,
-        device=device,
-        batch_size=batch_size,
-    ).build(corpus)
-    retriever.save(index_dir)
-    log.info("Built and cached CLIP image index: %s", index_dir)
-    return retriever
-
-
-def _clip_index_status(image_retriever) -> dict[str, int | bool]:
-    """Summarize the shared CLIP index available on the current retriever."""
-    if image_retriever is None:
-        return {
-            "has_image_index": False,
-            "has_text_index": False,
-            "image_docs": 0,
-            "text_docs": 0,
-        }
-    docs = list(getattr(image_retriever, "_docs", []) or [])
-    image_docs = sum(1 for doc in docs if getattr(doc, "image_path", None))
-    text_docs = sum(1 for doc in docs if getattr(doc, "text", ""))
-    has_index = getattr(image_retriever, "_index", None) is not None
-    return {
-        "has_image_index": bool(has_index and image_docs),
-        "has_text_index": bool(has_index and text_docs),
-        "image_docs": image_docs,
-        "text_docs": text_docs,
-    }
-
-
-def _available_actions_for_gate(
-    *,
-    has_query_images: bool,
-    image_enabled: bool,
-    image_retriever,
-) -> set[str]:
-    """Map actual index/tool availability to legal action types.
-
-    ``text_search`` deliberately stays independent of CLIP; it is backed by
-    BM25 over the text corpus.
-    """
-    clip = _clip_index_status(image_retriever)
-    available = {"text_search", "answer"}
-    if image_enabled and has_query_images and (
-        clip["has_image_index"] or clip["has_text_index"]
-    ):
-        available.add("image_search")
-    return available
-
-
-def build_searcher(cfg: dict[str, Any], queries, corpus, mock: bool) -> MCTSSearcher:
-    retriever_cfg = cfg.get("retriever", {})
-    image_cfg = retriever_cfg.get("image", {})
-    has_query_images = any(query.image_path for query in queries)
-    has_corpus_images = any(doc.image_path for doc in corpus)
-    image_requested = bool(retriever_cfg.get("image_search", image_cfg.get("enabled", False)))
-    image_enabled = False
-    image_retriever = None
-
-    retriever = BM25Retriever().build(corpus)
-    image_enabled = image_requested and has_query_images and not mock
-    if image_enabled:
-        image_retriever = _build_local_image_retriever(cfg, corpus, image_cfg)
-
-    image_enabled = (
-        image_enabled
-        and has_query_images
-        and image_retriever is not None
-    )
-    clip_status = _clip_index_status(image_retriever)
-    available_actions = _available_actions_for_gate(
-        has_query_images=has_query_images,
-        image_enabled=image_enabled,
-        image_retriever=image_retriever,
-    )
-
-    if image_retriever is not None:
-        log.info(
-            "Image retriever enabled for %s (image_search=%s, query_images=%s, "
-            "corpus_images=%s, clip_image_docs=%s, clip_text_docs=%s)",
-            cfg.get("benchmark"),
-            image_enabled,
-            has_query_images,
-            has_corpus_images,
-            clip_status["image_docs"],
-            clip_status["text_docs"],
-        )
-    elif image_requested and not mock:
-        log.info(
-            "Image search disabled for %s: query_images=%s, corpus_images=%s",
-            cfg.get("benchmark"),
-            has_query_images,
-            has_corpus_images,
-        )
-    executor = ActionExecutor(
-        text_retriever=retriever,
-        image_retriever=image_retriever,
-        top_k=int(retriever_cfg.get("top_k", 5)),
-        image_top_k=int(image_cfg.get("top_k", 3)),
-    )
-
-    policy_cfg = dict(cfg.get("policy", {}))
-    if mock:
-        policy_cfg["backend"] = "mock"
-    generator = build_generator(policy_cfg)
-
-    if mock:
-        # Mock 模式：启发式 proposer + 受控准确率的答案（与 pilot 同一机制）
-        gold_by_question = {q.question: q.gold_answers for q in queries}
-        proposer = HeuristicProposer(
-            generator,
-            enable_image_actions=image_enabled,
-            answer_kwargs_fn=lambda s: {"reference": gold_by_question.get(s.question)},
-        )
-    else:
-        proposer = LLMProposer(
-            generator,
-            enable_image_search=image_enabled,
-            freeze_action_queries=bool(policy_cfg.get("freeze_action_queries", False)),
-        )
-
-    gate_cfg = cfg.get("action_gate", {})
-    if bool(gate_cfg.get("enabled", False)):
-        proposer = GatedProposer(
-            proposer,
-            benchmark=str(cfg.get("benchmark", "")),
-            mode=str(gate_cfg.get("mode", "dataset")),
-            max_actions=(
-                int(gate_cfg["max_actions"])
-                if gate_cfg.get("max_actions") is not None
-                else None
-            ),
-            available_actions=available_actions,
-        )
-        log.info(
-            "Action gate enabled: mode=%s, max_actions=%s, available_actions=%s",
-            gate_cfg.get("mode", "dataset"),
-            gate_cfg.get("max_actions"),
-            ",".join(sorted(available_actions)),
-        )
-
-    return MCTSSearcher(
-        executor=executor,
-        proposer=proposer,
-        scorer=HeuristicOverlapScorer(),  # 离线引导信号；不是数据标签
-        config=SearchConfig.from_dict({"search": cfg.get("mcts", {})}),
-    )
 
 
 def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
@@ -232,6 +48,7 @@ def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
                     "text": e.text,
                     "image_path": e.image_path,
                     "score": e.score,
+                    "result_modality": e.result_modality,
                 }
                 for e in state.evidence
                 if e.step_index == i
@@ -273,7 +90,9 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
         data_dir=data_cfg.get("data_dir"),
         seed=int(data_cfg.get("seed", 0)),
     )
-    searcher = build_searcher(cfg, queries, corpus, mock)
+    searcher = build_search_stack(
+        cfg, queries, corpus, mock=mock, benchmark=str(cfg.get("benchmark", ""))
+    )
     dedupe = bool(cfg.get("quality", {}).get("dedupe_within_query", True))
 
     n_new = n_failed = 0

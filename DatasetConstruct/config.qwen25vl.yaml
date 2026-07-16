@@ -25,9 +25,10 @@ policy:
   temperature: 0.7
 
 retriever:
+  backend: unified          # unified | bm25 | hybrid — text_search 走统一 CLIP 单元级索引
+  dedupe: entity            # entity | doc | none — top-k 截断前实体去重
   top_k: 5
   image_search: true
-  cross_modal: false
   clip_model: clip-ViT-B-32
   image:
     enabled: true
@@ -103,6 +104,9 @@ action_gate:
   enabled: false
   mode: heuristic
   max_actions: 3
+
+prm:
+  scorer: overlap           # Step 1 rollout 离线引导信号（非数据标签）
 
 output:
   trajectories: data/trajectories/infoseek_qwen25vl7b_trajectories.jsonl

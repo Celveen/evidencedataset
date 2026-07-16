@@ -28,10 +28,11 @@ policy:                              # Step 1 policy VLM（API 形式）
   mock_seed: 0
 
 retriever:
+  backend: unified                    # unified=统一 CLIP 单元级索引（text_search 也走它）| bm25 | hybrid
+  dedupe: entity                      # entity | doc | none —— top-k 截断前按实体/文档去重
   top_k: 5
-  image_search: false                 # true=用 query image 检索共享 CLIP 语料索引
-  cross_modal: false                  # 已废弃；保留仅为兼容旧命令覆盖
-  clip_model: clip-ViT-B-32           # image_search 用的 CLIP 模型
+  image_search: false                 # true=用 query image 检索统一 CLIP 语料索引
+  clip_model: clip-ViT-B-32           # 统一索引用的 CLIP 模型
   ocr:
     enabled: false                    # OCR 不再作为默认 MCTS action
     command: /home/wenke/SQJ/code/EvidenceTree/.tools/tesseract/bin/tesseract
@@ -100,6 +101,9 @@ action_gate:
   enabled: false                     # 新版动作空间先不使用本地 gate
   mode: heuristic
   max_actions: 3
+
+prm:
+  scorer: overlap                    # Step 1 rollout 的离线引导信号（非数据标签）
 
 output:                              # 中间与最终产物（mock 模式自动加 mock_ 前缀）
   trajectories: data/trajectories/infoseek_trajectories.jsonl   # Step 1

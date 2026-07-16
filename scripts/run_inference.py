@@ -26,15 +26,8 @@ _SRC = Path(__file__).resolve().parents[1] / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from evidencetree.actions import ActionExecutor, BM25Retriever  # noqa: E402
-from evidencetree.actions.retrievers import ClipImageRetriever  # noqa: E402
 from evidencetree.eval import benchmarks, metrics  # noqa: E402
-from evidencetree.generation import build_generator  # noqa: E402
-from evidencetree.mcts import (  # noqa: E402
-    HeuristicProposer, LLMProposer, MCTSSearcher, SearchConfig,
-)
-from evidencetree.mcts.proposer import GatedProposer  # noqa: E402
-from evidencetree.prm.model import HeuristicOverlapScorer, VisualPRMScorer  # noqa: E402
+from evidencetree.pipeline import build_search_stack  # noqa: E402
 from evidencetree.utils import config as cfgutil  # noqa: E402
 from evidencetree.utils import get_logger  # noqa: E402
 
@@ -42,8 +35,16 @@ log = get_logger("run_inference")
 
 
 def build_components(cfg: dict[str, Any], mock: bool):
+    """Load the benchmark and wire the shared search stack.
+
+    The stack itself (retrievers -> executor -> proposer -> gate -> scorer)
+    comes from ``evidencetree.pipeline.build_search_stack`` — the SAME assembly
+    DatasetConstruct step1 uses, so inference cannot drift from construction.
+    """
     data_cfg = cfg.get("data", {})
-    queries, corpus = benchmarks.load_infoseek(
+    benchmark = str(cfg.get("benchmark") or data_cfg.get("benchmark") or "infoseek")
+    queries, corpus = benchmarks.load_benchmark(
+        name=benchmark,
         n=int(cfg.get("n_queries", 20)),
         mock=mock,
         data_dir=data_cfg.get("data_dir"),
@@ -51,92 +52,8 @@ def build_components(cfg: dict[str, Any], mock: bool):
     )
     log.info("Loaded %d queries, %d docs.", len(queries), len(corpus))
 
-    ret_cfg = dict(cfg.get("retriever", {}))
-    retriever = BM25Retriever().build(corpus)
-
-    # image_search needs a CLIP retriever AND images on both sides; otherwise
-    # the action executes against nothing (same guard as DatasetConstruct step1).
-    image_retriever = None
-    image_enabled = bool(ret_cfg.get("image_search", False)) and not mock
-    if image_enabled:
-        has_query_images = any(q.image_path for q in queries)
-        has_corpus_images = any(getattr(d, "image_path", None) for d in corpus)
-        if has_query_images and has_corpus_images:
-            image_retriever = ClipImageRetriever(
-                model_name=ret_cfg.get("clip_model", "clip-ViT-B-32"),
-            ).build(corpus)
-        else:
-            image_enabled = False
-            log.info(
-                "image_search disabled: query_images=%s, corpus_images=%s",
-                has_query_images, has_corpus_images,
-            )
-    executor = ActionExecutor(
-        text_retriever=retriever,
-        image_retriever=image_retriever,
-        top_k=int(ret_cfg.get("top_k", 5)),
-        image_top_k=int(ret_cfg.get("image_top_k", 3)),
-    )
-
-    # Policy VLM proposes candidate actions (mirrors DatasetConstruct step1):
-    # real mode = LLMProposer (Qwen decides what to do next, sees image +
-    # evidence) with heuristic fallback on parse failure; mock = heuristic.
-    policy_cfg = dict(cfg.get("policy") or cfg.get("generation", {}))
-    if mock:
-        policy_cfg["backend"] = "mock"
-    generator = build_generator(policy_cfg)
-
-    if mock:
-        # Mock runs thread the eval-only reference hint into answer drafting so
-        # generator accuracy is controlled (same device as the Stage 0.1 pilot).
-        gold_by_question = {q.question: q.gold_answers for q in queries}
-        proposer = HeuristicProposer(
-            generator,
-            enable_image_actions=image_enabled,
-            answer_kwargs_fn=lambda state: {
-                "reference": gold_by_question.get(state.question)
-            },
-        )
-    else:
-        proposer = LLMProposer(
-            generator,
-            enable_image_search=image_enabled,
-            freeze_action_queries=bool(policy_cfg.get("freeze_action_queries", False)),
-        )
-
-    gate_cfg = dict(cfg.get("action_gate", {}))
-    if bool(gate_cfg.get("enabled", False)):
-        available = {"text_search", "answer"} | ({"image_search"} if image_enabled else set())
-        proposer = GatedProposer(
-            proposer,
-            benchmark=str(cfg.get("benchmark", "infoseek")),
-            mode=str(gate_cfg.get("mode", "dataset")),
-            max_actions=(int(gate_cfg["max_actions"])
-                         if gate_cfg.get("max_actions") is not None else None),
-            available_actions=available,
-        )
-    log.info(
-        "Proposer: %s | image_search=%s | gate=%s",
-        type(proposer).__name__, image_enabled, bool(gate_cfg.get("enabled", False)),
-    )
-
-    prm_cfg = dict(cfg.get("prm", {}))
-    scorer_kind = prm_cfg.get("scorer") or ("overlap" if mock else "visualprm")
-    if scorer_kind == "overlap":
-        scorer = HeuristicOverlapScorer()
-    else:
-        scorer = VisualPRMScorer(
-            model_name=prm_cfg.get("model_name", "OpenGVLab/VisualPRM-8B"),
-            mock=mock,
-            device=prm_cfg.get("device"),
-        )
-    log.info("Scorer: %s | policy backend: %s", scorer_kind, policy_cfg.get("backend"))
-
-    searcher = MCTSSearcher(
-        executor=executor,
-        proposer=proposer,
-        scorer=scorer,
-        config=SearchConfig.from_dict(cfg),
+    searcher = build_search_stack(
+        cfg, queries, corpus, mock=mock, benchmark=benchmark
     )
     return queries, searcher
 

@@ -19,7 +19,10 @@ data:
   seed: 0
 
 retriever:
-  type: bm25                   # bm25 | dense (dense needs a built index)
+  backend: unified             # unified | bm25 | hybrid — unified = ONE CLIP space,
+                               # text+image units independently indexed, mixed top-k
+                               # (mock runs auto-fall back to bm25: no model downloads)
+  dedupe: entity               # entity | doc | none — dedupe before top-k truncation
   top_k: 5
 
 generation:                    # proposer's answer-drafting backend
@@ -53,8 +56,9 @@ policy:
   max_new_tokens: 256
   temperature: 0.7
 
-# 启用图检索：在 retriever 块加 image_search: true（需 query 图 + 语料图两侧齐备，
-# 并会用 retriever.clip_model / image_top_k）
+# 启用图检索：在 retriever 块加 image_search: true（需 query 带图；语料无图也可——
+# 统一 CLIP 空间下图 query 检索文本单元是合法的跨模态检索。用 retriever.clip_model /
+# image_top_k）
 
 action_gate:                      # 可选：按 benchmark 门控动作类型（GatedProposer）
   enabled: false

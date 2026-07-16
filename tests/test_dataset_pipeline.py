@@ -25,7 +25,11 @@ def cfg(tmp_path):
         "mcts": {"rollouts": 6, "max_depth": 3, "top_k_children": 3,
                  "early_stop_q": 2.0, "seed": 0},
         "policy": {"backend": "mock", "mock_accuracy": 0.6, "mock_seed": 0},
-        "retriever": {"top_k": 3},
+        # bm25 keeps this offline test download-free even in mock=False runs;
+        # unified-backend assembly is covered by tests/test_assembly.py with
+        # injected encoders.
+        "retriever": {"backend": "bm25", "top_k": 3},
+        "prm": {"scorer": "overlap"},
         "verifier": {"backend": "lexical", "alpha": 0.5},
         "rationale": {"backend": "mock", "max_attempts": 3},
         "quality": {"min_steps": 2, "max_steps": 8,
