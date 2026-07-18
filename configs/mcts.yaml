@@ -24,6 +24,9 @@ retriever:
                                # (mock runs auto-fall back to bm25: no model downloads)
   dedupe: entity               # entity | doc | none — dedupe before top-k truncation
   top_k: 5
+  image_search: true           # query-image search over the SAME unified index
+                               # (auto-disabled when queries carry no images, and in
+                               # mock runs without injected encoders)
 
 generation:                    # proposer's answer-drafting backend
   backend: mock                # mock | hf | api
@@ -56,9 +59,8 @@ policy:
   max_new_tokens: 256
   temperature: 0.7
 
-# 启用图检索：在 retriever 块加 image_search: true（需 query 带图；语料无图也可——
-# 统一 CLIP 空间下图 query 检索文本单元是合法的跨模态检索。用 retriever.clip_model /
-# image_top_k）
+# 图检索走统一 CLIP 空间：语料无图也可——图 query 检索文本单元是合法的跨模态
+# 检索（用 retriever.clip_model / image_top_k 调整）。
 
 action_gate:                      # 可选：按 benchmark 门控动作类型（GatedProposer）
   enabled: false
