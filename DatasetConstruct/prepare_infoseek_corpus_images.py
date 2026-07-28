@@ -21,6 +21,7 @@ import argparse
 import concurrent.futures as futures
 import gzip
 import json
+import os
 import random
 import re
 import shutil
@@ -35,7 +36,9 @@ from PIL import Image
 
 
 DEFAULT_DATA_DIR = Path("data/corpus/infoseek")
-DEFAULT_SOURCE_ROOT = Path("/media/wenke/BBC23084DC1B0A00/datasetForAiii/infoseek")
+DEFAULT_SOURCE_ROOT = Path(
+    os.environ.get("INFOSEEK_RAW_ROOT", "data/raw/infoseek")
+)
 DEFAULT_WIKI6M_URL = (
     "https://storage.googleapis.com/gresearch/open-vision-language/"
     "Wiki6M_ver_1_0.jsonl.gz"

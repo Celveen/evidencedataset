@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${GQA_ROOT:-/media/wenke/BBC23084DC1B0A00/datasetForAiii/GQA}"
+ROOT="${GQA_ROOT:-data/raw/GQA}"
 RAW="$ROOT/raw"
 LOG="$ROOT/gqa_download.log"
 

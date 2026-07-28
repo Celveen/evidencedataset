@@ -228,7 +228,7 @@ def main() -> int:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path("/media/wenke/BBC23084DC1B0A00/datasetForAiii/infoseek"),
+        default=Path(os.environ.get("INFOSEEK_RAW_ROOT", "data/raw/infoseek")),
     )
     args = parser.parse_args()
 

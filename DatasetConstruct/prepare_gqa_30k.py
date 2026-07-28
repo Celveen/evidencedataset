@@ -171,12 +171,14 @@ def main() -> int:
     parser.add_argument(
         "--raw-root",
         type=Path,
-        default=Path("/media/wenke/BBC23084DC1B0A00/datasetForAiii/GQA"),
+        default=Path("data/raw/GQA"),
+        help="Directory holding the downloaded GQA release.",
     )
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/home/wenke/SQJ/code/EvidenceTree/data/corpus/gqa"),
+        default=Path("data/corpus/gqa"),
+        help="Output directory for the converted corpus.",
     )
     parser.add_argument("--n", type=int, default=30000)
     parser.add_argument("--seed", type=int, default=0)

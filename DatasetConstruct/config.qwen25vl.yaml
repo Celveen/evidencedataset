@@ -36,11 +36,6 @@ retriever:
     device: cpu
     batch_size: 32
     top_k: 3
-  ocr:
-    enabled: false
-    command: /home/wenke/SQJ/code/EvidenceTree/.tools/tesseract/bin/tesseract
-    language: eng
-    psm: 3
 verifier:
   backend: clip
   clip_model: clip-ViT-B-32

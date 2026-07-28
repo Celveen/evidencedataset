@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 from urllib.parse import unquote
 from pathlib import Path
@@ -32,7 +33,7 @@ from evidencetree.utils import get_logger
 log = get_logger("dataset.prepare_other")
 
 DEFAULT_SOURCE_ROOT = Path(
-    "/media/wenke/BBC23084DC1B0A00/datasetForAiii"
+    os.environ.get("EVIDENCETREE_RAW_ROOT", "data/raw")
 )
 DATASETS = ("scienceqa", "mrag_bench", "kvqa")
 _MRAG_NOISE_TOKENS = {
