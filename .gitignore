@@ -18,12 +18,8 @@ dist/
 .ipynb_checkpoints/
 
 # Data & artifacts (large / generated — keep dirs via .gitkeep)
-data/corpus/*
-data/trajectories/*
-data/etbench_open/*
-data/inference_reports/*
-data/demo_5vqa_trajectories*.txt
-!data/**/.gitkeep
+data/*
+!data/.gitkeep
 *.faiss
 *.index
 *.bin
@@ -50,13 +46,3 @@ logs/
 .DS_Store
 .idea/
 .vscode/
-# LaTeX build artifacts
-paper/*.aux
-paper/*.bbl
-paper/*.blg
-paper/*.fdb_latexmk
-paper/*.fls
-paper/*.log
-paper/*.out
-paper/*.synctex.gz
-texput.log

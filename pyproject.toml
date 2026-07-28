@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "EvidenceTree: multimodal RAG with MCTS over a typed retrieval action space, guided by a grounded, action-typed process reward model."
 requires-python = ">=3.10"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 # Runtime deps are kept in requirements/*.txt so we can split local vs. GPU-server
 # installs. pyproject only declares the package itself.
 dependencies = []

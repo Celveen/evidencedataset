@@ -5,9 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="paper/evidencetree.pdf"><img alt="paper" src="https://img.shields.io/badge/paper-PDF-b31b1b.svg"></a>
   <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue.svg">
-  <img alt="tests" src="https://img.shields.io/badge/tests-pytest-green.svg">
+  <img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-green.svg">
 </p>
 
 <p align="center">
@@ -38,22 +37,21 @@ the frozen ET-PRM scores every candidate edge for UCB1 selection. **(b) Training
 MCTS rollouts are labeled per step with a dual-source reward and an answer-support gate,
 paired with QC-filtered rationales, and distilled into ET-PRM.
 
-Three components, one per gap in prior work:
+Four components:
 
-- **ET-PRM — a grounded, action-typed PRM.** Step labels fuse *local grounding* (relevance
-  of the action's retrieved results, measured in one unified CLIP space so text- and
-  image-side evidence are comparable) with *tree-level outcome credit* (the Monte Carlo
-  success rate of all rollouts through the node). An **answer-support gate** denies full
-  credit to answers that are correct but unsupported by any retrieved evidence, so
-  parametric lucky guesses cannot masquerade as good retrieval.
+- **ET-PRM.** Step labels fuse *local grounding* (relevance of what the action retrieved,
+  scored in one CLIP space so text- and image-side evidence are comparable) with
+  *tree-level outcome credit* (the Monte Carlo success rate of all rollouts through the
+  node). An **answer-support gate** denies full credit to correct-but-unsupported answers,
+  so parametric lucky guesses cannot masquerade as good retrieval.
 - **MCTS over retrieval actions.** Standard UCB1 with the PRM's Q as the only quality
   signal — no novelty or modality-coverage bonus. Because the tree branches over *actions*,
   backtracking out of a failed retrieval is a first-class operation.
 - **A unified cross-modal action space.** Corpus text chunks and images are independent
-  units in a single normalized CLIP index; both search actions query that one index and
-  return mixed top-*k* results tagged with their modality. The disambiguate-then-look-up
-  chain (`image_search` names the entity, `text_search` fetches its attribute) is therefore
-  two edges of the same tree.
+  units in one normalized CLIP index; both search actions query it and return mixed
+  top-*k* results tagged with their modality, so the disambiguate-then-look-up chain
+  (`image_search` names the entity, `text_search` fetches its attribute) is two edges of
+  the same tree.
 - **ETBench-Open.** A step-level annotated dataset of multimodal retrieval trajectories,
   built entirely on benchmark-provided corpora — no live web APIs — under a five-rule,
   leakage-proof rationale protocol.
@@ -63,8 +61,8 @@ Three components, one per gap in prior work:
 Overall accuracy (%), means over three seeds. All three rows share one backbone and this
 repository's corpus protocol, isolating the gain from tree search and the PRM: Vanilla RAG
 is the fixed-pipeline control, and Best-of-*N* is the matched-budget reranking control. The
-[paper](paper/evidencetree.pdf) additionally compares against published baselines and
-reports ablations and PRM diagnostics.
+paper additionally compares against published baselines and reports ablations and PRM
+diagnostics.
 
 | Method (backbone Qwen2.5-VL-7B)  | InfoSeek       | ScienceQA      | GQA            |
 | -------------------------------- | -------------- | -------------- | -------------- |
@@ -105,10 +103,8 @@ python scripts/run_inference.py --config configs/mcts.yaml --mock   # MCTS infer
 python DatasetConstruct/run_pipeline.py --mock                      # 4-step dataset pipeline
 ```
 
-`demo_5vqa.py` builds a tiny image-bearing world with deterministic stand-in encoders and
-runs the real searcher over it, printing every rollout with its retrieved units, node
-statistics, and the selected path. It is the fastest way to see what a trajectory looks
-like:
+`demo_5vqa.py` runs the real searcher over a tiny image-bearing world with deterministic
+stand-in encoders, printing every rollout with its retrieved units and node statistics:
 
 ```text
 QUERY vqa_0: Which city is linked to the red circle in this image?
@@ -138,7 +134,6 @@ src/evidencetree/
 DatasetConstruct/ ETBench-Open construction pipeline (4 steps) + benchmark data preparation
 scripts/          inference, index building, the 5-sample demo
 configs/          search / retrieval / policy / PRM configuration
-paper/            AAAI submission (LaTeX source, bibliography, PDF)
 tests/            unit and integration tests
 ```
 
@@ -147,7 +142,7 @@ Construction and inference share **one** assembly function,
 proposer, action gate, and scorer are wired in exactly one place, so the trees that produce
 training data and the trees searched at inference cannot drift apart.
 
-## Reproducing the paper
+## Reproducing the experiments
 
 ### 1. Prepare benchmark corpora
 
@@ -219,13 +214,9 @@ same block structure. The knobs that matter:
 | `verifier.support.floor`             | 0.3       | credit for a correct but evidence-unsupported answer             |
 | `action_gate.enabled`                | `false`   | optionally restrict action types per benchmark                   |
 
-## Paper
+## License
 
-[`paper/`](paper/) contains the LaTeX source, bibliography, and compiled PDF. Build with:
-
-```bash
-cd paper && pdflatex evidencetree && bibtex evidencetree && pdflatex evidencetree && pdflatex evidencetree
-```
+Apache License 2.0 — see [LICENSE](LICENSE).
 
 ## Citation
 
