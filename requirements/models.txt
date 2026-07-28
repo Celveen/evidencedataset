@@ -1,12 +1,9 @@
 # Model-related dependencies. Needed only when actually loading models
-# (real VisualPRM-8B scoring, HF local generation, dense retrieval).
-# On macOS these install as CPU/MPS builds — fine for development, too slow for 8B.
+# (real VisualPRM / ET-PRM scoring, local HF generation, CLIP retrieval).
 -r base.txt
 torch>=2.1
 transformers>=4.44,<5        # 5.x requires torch>=2.4; pin <5 to match torch 2.2 (CPU/MPS dev)
 accelerate>=0.30
-sentence-transformers>=2.7   # dense retriever / CLIP image_search (Stage 1+)
-faiss-cpu>=1.7               # vector index (Stage 1+); use faiss-gpu on the server
+sentence-transformers>=2.7   # CLIP encoders backing the unified retrieval index
+faiss-cpu>=1.7               # vector index; use faiss-gpu on the server
 einops>=0.7
-pillow>=10.0                 # image handling for multimodal inputs
-chromadb>=1.0                # CRAG-MM official local retrieval indexes

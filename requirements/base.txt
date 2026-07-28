@@ -1,5 +1,5 @@
-# Base dependencies — installable locally on macOS WITHOUT CUDA.
-# The Stage 0.1 mock smoke test runs with ONLY these (no torch / no model download).
+# Base dependencies — installable without CUDA.
+# Every mock / demo run in the README works with ONLY these (no torch, no downloads).
 numpy>=1.24,<2        # 2.x breaks modules compiled against numpy 1.x (torch / faiss)
 scipy>=1.10
 scikit-learn>=1.3
@@ -7,6 +7,7 @@ pyyaml>=6.0
 rank-bm25>=0.2.2
 tqdm>=4.65
 pandas>=2.0
+pillow>=10.0          # image handling (demo, image-bearing tests)
 datasets>=2.14        # loading InfoSeek / benchmark data (pure-python loaders)
 anthropic>=0.39       # optional API generation backend (Claude)
 openai>=1.40          # optional API generation backend (GPT-4o)

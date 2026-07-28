@@ -60,9 +60,11 @@ Three components, one per gap in prior work:
 
 ## Results
 
-Overall accuracy (%), means over three seeds. Rows marked *(ours)* use this repository's
-corpus protocol; baseline numbers are quoted from their original publications. See the
-[paper](paper/evidencetree.pdf) for the full tables, ablations, and PRM diagnostics.
+Overall accuracy (%), means over three seeds. All three rows share one backbone and this
+repository's corpus protocol, isolating the gain from tree search and the PRM: Vanilla RAG
+is the fixed-pipeline control, and Best-of-*N* is the matched-budget reranking control. The
+[paper](paper/evidencetree.pdf) additionally compares against published baselines and
+reports ablations and PRM diagnostics.
 
 | Method (backbone Qwen2.5-VL-7B)  | InfoSeek       | ScienceQA      | GQA            |
 | -------------------------------- | -------------- | -------------- | -------------- |
