@@ -1,20 +1,21 @@
-"""把 InfoSeek 官方标注转换成本项目的 queries JSONL 格式。
+"""Convert the official InfoSeek annotations into this project's queries JSONL format.
 
-原始文件（官方 GCS 链接，见 DatasetConstruct/README.md）放在
+Place the raw files (official GCS links, see DatasetConstruct/README.md) in
 ``data/corpus/infoseek/raw/``：
 
-    infoseek_val.jsonl         # 73,620 条，带 answer/answer_eval —— 我们的测试集
-    infoseek_test.jsonl        # 347,980 条，无答案（只能交官方 leaderboard），跳过
-    infoseek_val_withkb.jsonl  # data_id -> Wikidata entity 映射（建语料用）
-    infoseek_human.jsonl       # 人工 set，无公开答案，跳过
+    infoseek_val.jsonl         # 73,620 rows with answer/answer_eval - our test set
+    infoseek_test.jsonl        # 347,980 rows, no answers (leaderboard only) - skipped
+    infoseek_val_withkb.jsonl  # data_id -> Wikidata entity map (used to build the corpus)
+    infoseek_human.jsonl       # human split, no public answers - skipped
 
-输出 ``data/corpus/infoseek/infoseek_queries.jsonl``，每行：
+Writes ``data/corpus/infoseek/infoseek_queries.jsonl``, one row per query:
     {"query_id", "question", "gold_answers": [...], "image_path",
      "metadata": {"image_id", "data_split", "entity_id", "entity_text"}}
 
-图像：InfoSeek 的图来自 OVEN（image_id 如 "oven_04990048"）。若已把 OVEN 图像
-下载到本地，用 --images-dir 指定目录（按 <image_id>.jpg 查找）；找不到则
-image_path 置 null（文本-only pipeline 可先跑）。
+Images: InfoSeek uses OVEN images (image_id such as "oven_04990048"). If the
+OVEN images are available locally, pass --images-dir (files are looked up as
+<image_id>.jpg); otherwise image_path is set to null and the text-only pipeline
+still runs.
 
 Usage:
     python DatasetConstruct/prepare_infoseek.py
@@ -93,7 +94,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Convert raw InfoSeek to pipeline format.")
     p.add_argument("--raw-dir", default="data/corpus/infoseek/raw")
     p.add_argument("--out", default="data/corpus/infoseek/infoseek_queries.jsonl")
-    p.add_argument("--images-dir", default=None, help="本地 OVEN 图像目录（可选）。")
+    p.add_argument("--images-dir", default=None, help="Local OVEN image directory (optional).")
     args = p.parse_args(argv)
     convert(
         raw_dir=resolve(args.raw_dir),

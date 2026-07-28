@@ -21,8 +21,8 @@ dist/
 data/corpus/*
 data/trajectories/*
 data/etbench_open/*
-data/pilot_reports/*
 data/inference_reports/*
+data/demo_5vqa_trajectories*.txt
 !data/**/.gitkeep
 *.faiss
 *.index
@@ -40,9 +40,8 @@ logs/
 *.key
 
 # Local backup copies / archives (never push these)
-*副本/
-*_副本/
 *.zip
+*.tar.gz
 
 # Claude Code local settings
 .claude/settings.local.json
@@ -51,9 +50,13 @@ logs/
 .DS_Store
 .idea/
 .vscode/
+# LaTeX build artifacts
 paper/*.aux
-paper/*.log
-paper/*.out
 paper/*.bbl
 paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
 texput.log

@@ -1,17 +1,22 @@
-"""为 InfoSeek 构建本地检索语料（一次性离线数据准备）。
+"""Build the local retrieval corpus for InfoSeek (one-time offline data prep).
 
-val 集共 ~1.8K 个唯一 Wikidata 实体（raw/infoseek_val_withkb.jsonl）。流程：
-    1. Wikidata API 批量（50/请求）查实体的英文维基标题（sitelinks/enwiki）
-    2. Wikipedia API 逐页抓全文 plaintext（断点续跑：raw/wiki_pages.jsonl）
-    3. 切成 ~1200 字符的段落 chunk → data/corpus/infoseek/infoseek_corpus.jsonl
-       每行 {"doc_id": "Q123_p0", "title", "text"}
+The validation split covers ~1.8K unique Wikidata entities
+(raw/infoseek_val_withkb.jsonl). Steps:
+    1. Wikidata API, batched (50 per request): entity -> English Wikipedia title
+       (sitelinks/enwiki)
+    2. Wikipedia API, page by page: full plaintext, resumable via
+       raw/wiki_pages.jsonl
+    3. split into ~1200-character paragraph chunks ->
+       data/corpus/infoseek/infoseek_corpus.jsonl, one
+       {"doc_id": "Q123_p0", "title", "text"} per line
 
-说明：这是**数据集准备**（语料一次抓取后固定、可随数据集发布），不违反
-"检索全程离线"约束——运行时检索只打本地索引（报告 §3.5）。
+This is dataset preparation: the corpus is fetched once, then frozen and
+releasable alongside the dataset. It does not violate the offline-retrieval
+constraint, since retrieval at run time only ever hits the local index.
 
 Usage:
-    python DatasetConstruct/build_corpus.py            # 全部实体
-    python DatasetConstruct/build_corpus.py --limit 50 # 试跑
+    python DatasetConstruct/build_corpus.py            # all entities
+    python DatasetConstruct/build_corpus.py --limit 50 # trial run
 """
 
 from __future__ import annotations
@@ -123,8 +128,9 @@ def run(raw_dir: Path, out_path: Path, limit: int | None = None) -> Path:
         qids = qids[:limit]
     log.info("Entities to cover: %d", len(qids))
 
-    pages_path = raw_dir / "wiki_pages.jsonl"  # fetch cache（断点续跑）
-    # 只把"已抓到非空文本"的算作完成；空页（多为 429 限速所致）重跑时补抓。
+    pages_path = raw_dir / "wiki_pages.jsonl"  # fetch cache (resumable)
+    # Only pages with non-empty text count as done; empty pages (usually 429
+    # rate limiting) are re-fetched on the next run.
     done = (
         {row["entity_id"] for row in read_jsonl(pages_path) if row.get("text")}
         if pages_path.exists()
@@ -155,7 +161,7 @@ def run(raw_dir: Path, out_path: Path, limit: int | None = None) -> Path:
             append_jsonl(pages_path, [{"entity_id": qid, "title": title, "text": text}])
             if n % 100 == 0:
                 log.info("  wikipedia pages: %d/%d", n, len(todo))
-            time.sleep(0.8)  # 限速友好；稳定慢速比触发 429 退避更快
+            time.sleep(0.8)  # be gentle: steady and slow beats triggering 429 backoff
 
     # pages -> chunked corpus
     rows = []
@@ -182,7 +188,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Build the InfoSeek Wikipedia corpus.")
     p.add_argument("--raw-dir", default="data/corpus/infoseek/raw")
     p.add_argument("--out", default="data/corpus/infoseek/infoseek_corpus.jsonl")
-    p.add_argument("--limit", type=int, default=None, help="只处理前 N 个实体（试跑）。")
+    p.add_argument("--limit", type=int, default=None, help="Only process the first N entities (trial run).")
     args = p.parse_args(argv)
     run(resolve(args.raw_dir), resolve(args.out), limit=args.limit)
     return 0

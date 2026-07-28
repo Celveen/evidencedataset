@@ -1,10 +1,13 @@
-"""Step 4 — 质量过滤 + train/val 划分 → ETBench-Open。
+"""Step 4 — quality filtering and train/val splitting -> ETBench-Open.
 
-过滤规则（实现报告 §3.5）：
-    1. 轨迹长度：步数 < min_steps 或 > max_steps 的轨迹整条丢弃
-    2. grounding-outcome 严重不一致：|local - outcome| > gap 的样本丢弃（noisy label）
-    3. rationale QC：qc_pass=false（重生成后仍不合格）的样本丢弃
-train/val 按 query_id 划分（同一 query 的样本不跨集，防泄漏）。
+Three drop rules:
+    1. trajectory length: drop the whole trajectory when its step count is
+       outside [min_steps, max_steps]
+    2. grounding-outcome contradiction: drop samples with |local - outcome| >
+       gap as noisy labels
+    3. rationale QC: drop samples with qc_pass=false (still invalid after
+       regeneration)
+The train/val split is by query_id, so no query spans both sides.
 
 Usage:
     python DatasetConstruct/step4_quality_filter.py --mock

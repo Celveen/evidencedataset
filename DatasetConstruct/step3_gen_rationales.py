@@ -1,8 +1,10 @@
-"""Step 3 — 强 LLM 看 (state, action, score)，生成解释 score 的 rationale。
+"""Step 3 — a strong LLM reads (state, action, score) and writes a rationale for it.
 
-项目里唯一被允许的外部 API 用途（离线一次性；检索绝不走 API）。
-QC 不过的样本会重生成至多 max_attempts 次；仍不过的标记 qc_pass=false，
-由 Step 4 丢弃。断点续跑：已有 sample_id 跳过。
+This is the only sanctioned use of an external API in the project (offline and
+one-time; retrieval never goes through an API). Samples that fail QC are
+regenerated up to max_attempts times; those still failing are marked
+qc_pass=false and dropped by Step 4. Runs resume: existing sample_ids are
+skipped.
 
 Usage:
     python DatasetConstruct/step3_gen_rationales.py --mock

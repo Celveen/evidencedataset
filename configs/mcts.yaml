@@ -8,9 +8,11 @@ search:
   max_depth: 3
   top_k_children: 3            # children kept per expansion (PRM-ranked)
   c_uct: 1.0                   # UCB1 exploration constant
-  early_stop_q: 2.0            # tau_stop；>1=禁用。未校准 PRM 的分数无概率意义，0.9 阈值会在
-                               # 第 1 条 rollout 后就终止搜索（Yes-prob 饱和），树根本没机会展开。
-                               # ET-PRM 完成 Stage 4.3 校准后再启用（如 0.9）。
+  early_stop_q: 2.0            # tau_stop; > 1 disables it. An uncalibrated PRM's scores carry
+                               # no probabilistic meaning, so a 0.9 threshold ends the search
+                               # after the first rollout (saturated yes-probability) and the
+                               # tree never expands. Re-enable (e.g. 0.9) once ET-PRM is
+                               # calibrated.
   seed: 0
 
 data:
@@ -37,7 +39,8 @@ generation:                    # proposer's answer-drafting backend
   mock_accuracy: 0.6
   mock_seed: 0
 
-prm:                           # pluggable scorer (frozen VisualPRM until Stage 4)
+prm:                           # pluggable scorer; set scorer: visualprm + model_name for
+                               # the real (or fine-tuned) PRM, overlap for offline runs
   model_name: OpenGVLab/VisualPRM-8B
   device: null
   mock_correlation: 0.2
@@ -49,20 +52,23 @@ outcome:
 output:
   report_dir: data/inference_reports
 
-# ---- 推理侧 policy VLM（与 DatasetConstruct step1 同构；mock 模式自动忽略）----
+# ---- Inference-side policy VLM (identical wiring to DatasetConstruct step 1;
+# ignored in mock mode) ----
 policy:
-  backend: api                    # api | hf | mock；服务器上指向本地 vLLM 的 OpenAI 兼容端点
+  backend: api                    # api | hf | mock; point base_url at a local vLLM
+                                  # OpenAI-compatible endpoint when serving your own policy
   provider: openai
   model: Qwen2.5-VL-7B-Instruct
   base_url: http://127.0.0.1:8000/v1
-  api_key_env: DASHSCOPE_API_KEY  # 本地 vLLM 任意非空即可
+  api_key_env: DASHSCOPE_API_KEY  # any non-empty value works for a local vLLM server
   max_new_tokens: 256
   temperature: 0.7
 
-# 图检索走统一 CLIP 空间：语料无图也可——图 query 检索文本单元是合法的跨模态
-# 检索（用 retriever.clip_model / image_top_k 调整）。
+# Image retrieval runs over the unified CLIP space. A corpus without images is fine:
+# querying text units with an image is legitimate cross-modal retrieval
+# (tune with retriever.clip_model / retriever.image_top_k).
 
-action_gate:                      # 可选：按 benchmark 门控动作类型（GatedProposer）
+action_gate:                      # optional per-benchmark action-type gate (GatedProposer)
   enabled: false
   mode: dataset
   max_actions: null

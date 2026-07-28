@@ -1,9 +1,10 @@
-"""Step 1 — policy VLM 在每个 query 上跑 MCTS，生成 trajectories。
+"""Step 1 — run MCTS with the policy VLM on every query to generate trajectories.
 
-搜索栈由 evidencetree.pipeline.build_search_stack 统一装配（与
-scripts/run_inference.py 完全同一条装配路径，杜绝两处漂移）。
-每条 rollout 的终态轨迹都被收集（不止最优那条），写入 trajectories JSONL。
-断点续跑：输出文件里已有的 query_id 自动跳过（--force 重跑全部）。
+The search stack is assembled by evidencetree.pipeline.build_search_stack, the
+exact same path scripts/run_inference.py uses, so construction and inference
+cannot drift apart. Every rollout's terminal trajectory is collected (not just
+the best one) and written to the trajectories JSONL. Runs resume: query_ids
+already present in the output file are skipped (--force regenerates all).
 
 Usage:
     python DatasetConstruct/step1_gen_trajectories.py --mock
@@ -27,7 +28,7 @@ log = get_logger("dataset.step1")
 
 
 def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
-    """把一条 rollout 的终态 SearchState 序列化为 trajectory JSON 行。"""
+    """Serialize one rollout's terminal SearchState as a trajectory JSON row."""
     state = record.state
     steps = []
     for i, action in enumerate(state.actions_taken):
@@ -67,7 +68,7 @@ def trajectory_dict(query, record, t_index: int) -> dict[str, Any]:
         "image_path": query.image_path,
         "gold_answers": query.gold_answers,
         "rollout_t": record.t,
-        "gen_reward": record.reward,          # 生成期引导分（非标签）
+        "gen_reward": record.reward,          # guidance score used during generation (not a label)
         "final_answer": final_answer,
         "outcome_em": metrics.exact_match(final_answer, query.gold_answers),
         "steps": steps,

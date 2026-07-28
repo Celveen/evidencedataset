@@ -142,7 +142,8 @@ def main(argv=None) -> int:
 
     log.info("=== EvidenceTree MCTS inference (mock=%s) ===", args.mock)
     if args.mock:
-        log.warning("MOCK 模式：合成数据 + 启发式 scorer，仅验证搜索框架，非真实结果。")
+        log.warning("MOCK mode: synthetic data + heuristic scorer. This validates the search "
+            "framework only; the numbers are not real results.")
     result = run(cfg, mock=args.mock)
     base = write_report(result, cfg, mock=args.mock)
 

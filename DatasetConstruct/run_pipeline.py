@@ -1,14 +1,14 @@
-"""ETBench-Open 数据集构建：一键跑完 4 步（或指定子集）。
+"""ETBench-Open construction: run all four steps (or a chosen subset).
 
     Step 1  policy VLM(API) MCTS rollout -> trajectories
     Step 2  grounding verifier + tree-level credit -> score labels
-    Step 3  强 LLM 生成 rationale
-    Step 4  质量过滤 -> data/etbench_open/{train,val}.jsonl
+    Step 3  rationale generation with a strong LLM
+    Step 4  quality filtering -> data/etbench_open/{train,val}.jsonl
 
 Usage:
-    python DatasetConstruct/run_pipeline.py --mock            # 本地冒烟，无 API
-    python DatasetConstruct/run_pipeline.py                   # 真实运行（需 .env）
-    python DatasetConstruct/run_pipeline.py --steps 3,4       # 只跑后两步
+    python DatasetConstruct/run_pipeline.py --mock            # offline smoke run, no API calls
+    python DatasetConstruct/run_pipeline.py                   # real run (needs .env)
+    python DatasetConstruct/run_pipeline.py --steps 3,4       # only the last two steps
 """
 
 from __future__ import annotations
@@ -32,20 +32,20 @@ from evidencetree.utils import get_logger  # noqa: E402
 log = get_logger("dataset.pipeline")
 
 _STEPS = {
-    1: ("生成 trajectories", step1_gen_trajectories.run),
+    1: ("generate trajectories", step1_gen_trajectories.run),
     2: ("score labels（grounding + tree credit）", step2_score_labels.run),
-    3: ("rationale 生成", step3_gen_rationales.run),
-    4: ("质量过滤 → ETBench-Open", step4_quality_filter.run),
+    3: ("generate rationales", step3_gen_rationales.run),
+    4: ("quality filter -> ETBench-Open", step4_quality_filter.run),
 }
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="ETBench-Open construction pipeline.")
     p.add_argument("--config", default=str(Path(__file__).parent / "config.yaml"))
-    p.add_argument("--steps", default="1,2,3,4", help="如 1,2 或 3,4。")
-    p.add_argument("--mock", action="store_true", help="本地冒烟（无 API、无下载）。")
-    p.add_argument("--n", type=int, default=None, help="覆盖 data.n_queries。")
-    p.add_argument("--force", action="store_true", help="重做（忽略已有输出）。")
+    p.add_argument("--steps", default="1,2,3,4", help="e.g. 1,2 or 3,4.")
+    p.add_argument("--mock", action="store_true", help="Offline smoke run (no API calls, no downloads).")
+    p.add_argument("--n", type=int, default=None, help="Override data.n_queries.")
+    p.add_argument("--force", action="store_true", help="Redo from scratch (ignore existing output).")
     p.add_argument("--set", dest="overrides", action="append", default=[])
     args = p.parse_args(argv)
 
@@ -56,13 +56,14 @@ def main(argv=None) -> int:
 
     selected = sorted({int(s) for s in args.steps.split(",") if s.strip()})
     if args.mock:
-        log.warning("MOCK 模式：合成数据 + 模板 rationale，仅验证 pipeline，非真实数据集。")
+        log.warning("MOCK mode: synthetic data + template rationales. This validates the "
+            "pipeline only; it is not a real dataset.")
     for step in selected:
         name, fn = _STEPS[step]
         log.info("=== Step %d — %s ===", step, name)
         t0 = time.time()
         fn(cfg, mock=args.mock, force=args.force)
-        log.info("=== Step %d 完成（%.1fs）===", step, time.time() - t0)
+        log.info("=== Step %d done (%.1fs) ===", step, time.time() - t0)
     return 0
 
 

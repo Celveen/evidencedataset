@@ -1,57 +1,56 @@
-# ETBench-Open 数据集构建配置。所有路径相对仓库根目录。
-# 用法见 DatasetConstruct/README.md；mock 冒烟:
+# ETBench-Open construction config. All paths are relative to the repository root.
+# See DatasetConstruct/README.md; offline smoke test:
 #   python DatasetConstruct/run_pipeline.py --mock
 
 benchmark: infoseek
 
 data:
-  data_dir: data/corpus/infoseek     # 原始数据（queries/corpus 两个 JSONL）
-  n_queries: 100                     # 先小规模试跑；全量 InfoSeek ~15K
+  data_dir: data/corpus/infoseek     # raw data (queries / corpus JSONL)
+  n_queries: 100                     # pilot small first; full InfoSeek is ~15K
   seed: 0
 
-mcts:                                # Step 1 rollout 设置（语义同 configs/mcts.yaml 的 search 块）
-  rollouts: 10                       # P —— 每个 query 至多 ~10 条 trajectory
-  max_depth: 3
-  top_k_children: 3
-  early_stop_q: 2.0                  # >1 即关闭早停：数据生成要多样轨迹，不要提前停
+mcts:                                # Step 1 rollout settings; same semantics as the
+                                     # `search` block of configs/mcts.yaml
+  rollouts: 10                       # P — at most ~10 trajectories per query
+  max_depth: 3                       # actions per trajectory (the root is depth 0)
+  top_k_children: 3                  # candidate actions kept per expansion
+  early_stop_q: 2.0                  # > 1 disables early stopping: data generation wants
+                                     # diverse trajectories, not quick exits
   seed: 0
 
-policy:                              # Step 1 policy VLM（API 形式）
-  backend: api                       # api | mock（mock = 本地冒烟，无 API 调用）
-  provider: openai                   # openai 同时覆盖一切 OpenAI 兼容端点
-  model: qwen3-vl-flash              # weak policy（qwen2.5-vl 已在 DashScope 下线）
+policy:                              # Step 1 policy VLM (OpenAI-compatible API)
+  backend: api                       # api | mock (mock = offline smoke, no API calls)
+  provider: openai                   # `openai` covers every OpenAI-compatible endpoint
+  model: qwen3-vl-flash              # weak policy
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  api_key_env: DASHSCOPE_API_KEY     # 在 DatasetConstruct/.env 里填
-  max_new_tokens: 256                # 动作提议为多行 JSON，128 容易截断
-  temperature: 0.7                   # 采样温度 >0，保证 rollout 间多样性
-  mock_accuracy: 0.6                 # 仅 mock 模式生效
+  api_key_env: DASHSCOPE_API_KEY     # set in DatasetConstruct/.env
+  max_new_tokens: 256                # action proposals are multi-line JSON; 128 truncates
+  temperature: 0.7                   # > 0 so rollouts differ from each other
+  mock_accuracy: 0.6                 # mock backend only
   mock_seed: 0
 
 retriever:
-  backend: unified                    # unified=统一 CLIP 单元级索引（text_search 也走它）| bm25 | hybrid
-  dedupe: entity                      # entity | doc | none —— top-k 截断前按实体/文档去重
+  backend: unified                    # unified = one unit-level CLIP index shared by both
+                                      # search actions | bm25 | hybrid
+  dedupe: entity                      # entity | doc | none — applied before top-k truncation
   top_k: 5
-  image_search: true                  # 用 query image 检索统一 CLIP 语料索引（query 无图时
-                                      # 装配层自动禁用；mock 冒烟无注入编码器时同样自动禁用）
-  clip_model: clip-ViT-B-32           # 统一索引用的 CLIP 模型
-  ocr:
-    enabled: false                    # OCR 不再作为默认 MCTS action
-    command: /home/wenke/SQJ/code/EvidenceTree/.tools/tesseract/bin/tesseract
-    language: eng                     # tesseract -l
-    psm: 3                            # tesseract --psm
+  image_search: true                  # image-query retrieval over the same unified index
+                                      # (auto-disabled when queries carry no images, and in
+                                      # mock runs without injected encoders)
+  clip_model: clip-ViT-B-32           # encoder backing the unified index
 
 verifier:                            # Step 2 grounding verifier
-  backend: clip                      # clip(正式) | lexical(mock/离线)
+  backend: clip                      # clip (real) | lexical (mock / offline)
   clip_model: clip-ViT-B-32
   text_cos_lo: 0.5
   text_cos_hi: 0.9
   image_cos_lo: 0.15
   image_cos_hi: 0.32
-  alpha: 0.5                         # score = alpha*local + (1-alpha)*outcome
-  support:                           # answer 步：答案是否被已积累证据支撑
+  alpha: 0.5                         # score = alpha * local + (1 - alpha) * outcome
+  support:                           # answer steps: is the answer backed by the evidence?
     backend: api                     # api | lexical | off
-    floor: 0.3                       # 答对无支撑约 0.3，答对且有支撑接近 1
-    unsupported_threshold: 0.3       # outcome>=0.5 且 support<=此值 -> unsupported_correct
+    floor: 0.3                       # correct-but-unsupported ~0.3; correct-and-supported ~1
+    unsupported_threshold: 0.3       # outcome >= 0.5 and support <= this -> unsupported_correct
     generation:
       backend: api
       provider: openai
@@ -63,51 +62,53 @@ verifier:                            # Step 2 grounding verifier
       timeout: 60
       extra_body:
         thinking: {type: disabled}
-  generation:                        # 仅 backend=api 时使用
+  generation:                        # used only when backend: api
     backend: api
-    provider: openai                 # DeepSeek 走 OpenAI 兼容端点
+    provider: openai                 # DeepSeek speaks the OpenAI-compatible protocol
     model: deepseek-v4-pro
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     max_new_tokens: 8
     temperature: 0.0
     timeout: 120
-    extra_body:                      # v4-pro 是推理模型：必须禁思考，否则
-      thinking: {type: disabled}     # thinking token 吃光预算、content 为空
+    extra_body:                      # reasoning models must have thinking disabled here,
+      thinking: {type: disabled}     # or thinking tokens exhaust the budget and content is empty
 
-rationale:                           # Step 3 强 LLM rationale 生成
-  backend: api                       # api | mock（mock = 模板，仅冒烟）
-  concurrency: 8                     # 并发请求数（DeepSeek 支持并发）
+rationale:                           # Step 3 rationale generation with a strong LLM
+  backend: api                       # api | mock (mock = template, smoke only)
+  concurrency: 8                     # parallel requests
   generation:
     backend: api
-    provider: openai                 # DeepSeek 走 OpenAI 兼容端点
+    provider: openai
     model: deepseek-v4-pro
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     max_new_tokens: 300
     temperature: 0.3
     timeout: 120
-    extra_body:                      # 禁用思考（见上）
+    extra_body:                      # disable thinking (see above)
       thinking: {type: disabled}
-  max_attempts: 3                    # QC 不过重生成次数（报告预估 ~15% 重生成）
+  max_attempts: 3                    # regeneration attempts when QC rejects a rationale
 
-quality:                             # Step 4 质量过滤
-  min_steps: 2                       # 轨迹过短拒绝（报告 §3.5）
-  max_steps: 8                       # 轨迹过长拒绝
-  max_grounding_outcome_gap: 0.7     # |local - outcome| 超过即视为 noisy label 丢弃
-  dedupe_within_query: true          # 同 query 内动作序列完全相同的轨迹去重
-  val_fraction: 0.05                 # 按 query 划 train/val（同 query 不跨集）
+quality:                             # Step 4 quality filtering
+  min_steps: 2                       # reject trajectories that are too short
+  max_steps: 8                       # reject trajectories that are too long
+  max_grounding_outcome_gap: 0.7     # drop as a noisy label when |local - outcome| exceeds this
+  dedupe_within_query: true          # drop repeated action sequences within one query
+  val_fraction: 0.05                 # split train/val by query (no query spans both)
 
 action_gate:
-  enabled: false                     # 新版动作空间先不使用本地 gate
+  enabled: false                     # optional per-benchmark restriction of action types
   mode: heuristic
   max_actions: 3
 
 prm:
-  scorer: overlap                    # Step 1 rollout 的离线引导信号（非数据标签）
+  scorer: overlap                    # offline guidance signal for Step 1 rollouts
+                                     # (this is NOT the dataset label)
 
-output:                              # 中间与最终产物（mock 模式自动加 mock_ 前缀）
+output:                              # intermediate and final artifacts
   trajectories: data/trajectories/infoseek_trajectories.jsonl   # Step 1
   scored: data/trajectories/infoseek_scored.jsonl               # Step 2
   rationales: data/trajectories/infoseek_rationales.jsonl       # Step 3
-  dataset_dir: data/etbench_open                                # Step 4（train/val/stats）
+  dataset_dir: data/etbench_open                                # Step 4 (train / val / stats)
+                                     # mock runs prefix every output with `mock_`

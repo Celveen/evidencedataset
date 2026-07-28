@@ -1,14 +1,17 @@
-"""Step 2 — 给每条 trajectory 的每个 step 打 score label。
+"""Step 2 — assign a score label to every step of every trajectory.
 
-    local grounding  — Stage 2 verifier（lexical 或 API LLM judge），graded 0-1
-    outcome credit   — tree-level credit：经过该节点（同 query 内相同动作前缀）
-                       的所有 trajectory 的成功率（Monte Carlo），不是均摊
-    answer support   — answer 步专属：答案是否被已积累证据支撑（lexical/API judge）
-    score            — 非 answer 步 alpha*local + (1-alpha)*outcome；
-                       answer 步 outcome * (floor + (1-floor)*support)，
-                       support 缺失时退回 outcome-only
+    local grounding  — grounding verifier (lexical or API judge), graded 0-1
+    outcome credit   — tree-level credit: the Monte Carlo success rate of all
+                       trajectories through this node (same action prefix within
+                       a query), not an evenly shared outcome
+    answer support   — answer steps only: is the answer backed by the evidence
+                       accumulated so far (lexical / API judge)
+    score            — non-answer steps: alpha*local + (1-alpha)*outcome;
+                       answer steps: outcome * (floor + (1-floor)*support),
+                       falling back to outcome-only when support is unavailable
 
-核心逻辑在 evidencetree.prm.data_gen.label_steps；本脚本只做 IO 与统计。
+The logic lives in evidencetree.prm.data_gen.label_steps; this script only does
+I/O and statistics.
 
 Usage:
     python DatasetConstruct/step2_score_labels.py --mock

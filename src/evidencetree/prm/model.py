@@ -28,7 +28,7 @@ from typing import Any, Sequence
 class TrajectoryStep:
     """One retrieval/answer step in a trajectory."""
 
-    action_type: str            # "text_search" | "image_search" | "ocr" | "answer"
+    action_type: str            # "text_search" | "image_search" | "answer"
     action_input: str           # query text / region / answer text
     observation: str = ""       # retrieved evidence (text) for this step
 

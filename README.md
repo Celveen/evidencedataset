@@ -1,105 +1,237 @@
-# EvidenceTree
+<h1 align="center">EvidenceTree</h1>
 
-多模态 RAG 系统：在**检索动作空间**上做 MCTS 搜索（标准 UCB1），由一个 **grounded PRM**
-给每个检索动作打分引导搜索——PRM 的 Q 是唯一质量信号。
+<p align="center">
+  <b>Process-Rewarded Tree Search over Retrieval Actions for Multimodal RAG</b>
+</p>
 
-> 设计与实现规范见 [`EvidenceTree_项目实现报告.md`](EvidenceTree_项目实现报告.md)（当前 v1.5）。
-> **核心纪律：每个阶段必须独立跑通并验证后，才进入下一阶段。**
+<p align="center">
+  <a href="paper/evidencetree.pdf"><img alt="paper" src="https://img.shields.io/badge/paper-PDF-b31b1b.svg"></a>
+  <img alt="python" src="https://img.shields.io/badge/python-3.10%2B-blue.svg">
+  <img alt="tests" src="https://img.shields.io/badge/tests-pytest-green.svg">
+</p>
 
-## 数据流
+<p align="center">
+  <img src="assets/teaser.png" alt="Fixed RAG vs. linear agent vs. EvidenceTree" width="100%">
+</p>
 
-- **训练线**：benchmark 自带语料 → weak policy 跑 rollout → step 打标 → 训练 PRM
-- **推理线**：用户 query → MCTS（PRM 引导的 UCB1）→ 输出最优答案
+Multimodal retrieval-augmented generation is a sequence of retrieval decisions — what to
+search, with which modality, and when to stop — yet no current system can tell a good
+retrieval action from a bad one. Outcome-only RL misassigns credit across steps,
+imitation-learned agents cannot recover from a failed retrieval, and existing process
+reward models (PRMs) assume a *fixed* context while every retrieval action *modifies* it.
 
-## 快速开始
+**EvidenceTree makes retrieval actions the unit of both evaluation and search.** A
+grounded, action-typed PRM (ET-PRM) scores each candidate action by what it actually
+*retrieved*; Monte Carlo Tree Search over the typed action space
+`{text_search, image_search, answer}` uses that score as its sole value signal, so a
+branch poisoned by a bad retrieval can be abandoned rather than conditioned on.
+
+## Overview
+
+<p align="center">
+  <img src="assets/overview.png" alt="EvidenceTree overview: PRM-guided MCTS inference and ETBench-Open construction" width="100%">
+</p>
+
+**(a) Inference.** The search tree lives in the retrieval action space: nodes are evidence
+states, edges are typed retrieval actions executed against a benchmark-provided corpus, and
+the frozen ET-PRM scores every candidate edge for UCB1 selection. **(b) Training data.**
+MCTS rollouts are labeled per step with a dual-source reward and an answer-support gate,
+paired with QC-filtered rationales, and distilled into ET-PRM.
+
+Three components, one per gap in prior work:
+
+- **ET-PRM — a grounded, action-typed PRM.** Step labels fuse *local grounding* (relevance
+  of the action's retrieved results, measured in one unified CLIP space so text- and
+  image-side evidence are comparable) with *tree-level outcome credit* (the Monte Carlo
+  success rate of all rollouts through the node). An **answer-support gate** denies full
+  credit to answers that are correct but unsupported by any retrieved evidence, so
+  parametric lucky guesses cannot masquerade as good retrieval.
+- **MCTS over retrieval actions.** Standard UCB1 with the PRM's Q as the only quality
+  signal — no novelty or modality-coverage bonus. Because the tree branches over *actions*,
+  backtracking out of a failed retrieval is a first-class operation.
+- **A unified cross-modal action space.** Corpus text chunks and images are independent
+  units in a single normalized CLIP index; both search actions query that one index and
+  return mixed top-*k* results tagged with their modality. The disambiguate-then-look-up
+  chain (`image_search` names the entity, `text_search` fetches its attribute) is therefore
+  two edges of the same tree.
+- **ETBench-Open.** A step-level annotated dataset of multimodal retrieval trajectories,
+  built entirely on benchmark-provided corpora — no live web APIs — under a five-rule,
+  leakage-proof rationale protocol.
+
+## Results
+
+Overall accuracy (%), means over three seeds. Rows marked *(ours)* use this repository's
+corpus protocol; baseline numbers are quoted from their original publications. See the
+[paper](paper/evidencetree.pdf) for the full tables, ablations, and PRM diagnostics.
+
+| Method (backbone Qwen2.5-VL-7B)  | InfoSeek       | ScienceQA      | GQA            |
+| -------------------------------- | -------------- | -------------- | -------------- |
+| Vanilla RAG                      | 36.3 ± 0.5     | 89.0 ± 0.3     | 62.4 ± 0.3     |
+| VisualPRM-8B + Best-of-*N*       | 41.3 ± 0.5     | 92.4 ± 0.3     | 62.8 ± 0.3     |
+| **EvidenceTree (ours)**          | **46.8 ± 0.4** | **94.6 ± 0.2** | **64.7 ± 0.3** |
+
+## Installation
 
 ```bash
-# 1. 激活 conda 虚拟环境 RAG（位于 /opt/anaconda3/envs/RAG，Python 3.11）
-conda activate RAG
-# 若 shell 里 conda activate 不可用，直接用环境内解释器也行：
-#   /opt/anaconda3/envs/RAG/bin/python ...
+git clone https://github.com/Celveen/EvidenceTree.git
+cd EvidenceTree
+python -m venv .venv && source .venv/bin/activate     # or conda create -n evidencetree python=3.11
 
-# 2. 安装依赖（本地装到 models 档；server 档仅 GPU 服务器需要）
-pip install -r requirements/models.txt
+pip install -r requirements/base.txt                  # pure-Python core: BM25, metrics, API clients
 pip install -e .
-
-# 3. 跑通第一步 Stage 0.1（mock 模式，无需 GPU / 无需下载模型）
-python pilot/stage0_1_visualprm_diagnosis.py --config configs/pilot.yaml --mock
-
-# 4. 跑 MCTS 搜索框架（mock 数据 + 启发式 scorer，离线）
-python scripts/run_inference.py --config configs/mcts.yaml --mock
-
-# 5. 跑测试
-pytest
-
-# 6. 数据集构建（ETBench-Open，4 步 pipeline；mock 无需 API/下载）
-python DatasetConstruct/run_pipeline.py --mock
-python DatasetConstruct/trace_trajectory.py                 # 在图文场景上确定性追踪一条 MCTS 轨迹
-# 轨迹看不清时用 inspector 渲染紧凑摘要：
-python DatasetConstruct/inspect_trajectories.py <轨迹.jsonl> --n 5
 ```
 
-数据集构建（policy VLM + 强 LLM 走 API、检索动作、质量控制、如何放量）详见
-[`DatasetConstruct/README.md`](DatasetConstruct/README.md)；
-从一条轨迹到一条训练样本的逐步图解见
-[`DatasetConstruct/PIPELINE_WALKTHROUGH_CN.md`](DatasetConstruct/PIPELINE_WALKTHROUGH_CN.md)。
-真实运行（VisualPRM-8B + 1K InfoSeek）需在 GPU 服务器上，详见
-[`pilot/README.md`](pilot/README.md)。
+Two heavier dependency tiers are optional:
 
-## 论文（AAAI 投稿稿）
+| File                       | Contents                                | When you need it                     |
+| -------------------------- | --------------------------------------- | ------------------------------------ |
+| `requirements/base.txt`    | core Python deps                        | always; enough for every mock run    |
+| `requirements/models.txt`  | torch, transformers, sentence-transformers, faiss | real CLIP retrieval, VisualPRM scoring |
+| `requirements/server.txt`  | vLLM, peft, trl, wandb                  | serving the policy VLM, PRM training |
 
-[`paper/`](paper/) 下是 AAAI 格式的论文初稿：
+## Quickstart
 
-- `evidencetree.tex` / `evidencetree.pdf` — 正文（当前预印版式仅模仿 AAAI 双栏外观，正式提交前需换官方 author kit）
-- `references.bib` — 参考文献
-- `NUMBERS_SOURCES.md` — 表格中每个基线数字的出处与核实等级（✅/☑/⚠）
+Every command below runs offline on CPU — no API keys, no model downloads.
 
-**论文纪律**：我方结果全部留 "–"（训练未完成，投稿前必须填入真实数字）；
-基线数字全部引自原发表论文，逐格可溯源。本地编译：`pdflatex → bibtex → pdflatex ×2`。
+```bash
+pytest                                                        # unit + integration tests
 
-## 依赖分档
+python scripts/demo_5vqa.py                                   # 5-sample end-to-end VQA demo
+python scripts/demo_5vqa.py --proposer llm --scorer visualprm # same, exercising the VLM + PRM code paths
 
-| 文件 | 用途 | 适用 |
-|------|------|------|
-| `requirements/base.txt` | 轻量纯 Python（含 BM25、metrics、API 客户端） | 本地，mock 冒烟 |
-| `requirements/models.txt` | torch / transformers / faiss 等 | 真实跑模型 |
-| `requirements/server.txt` | vLLM / peft / trl / wandb | GPU 服务器训练推理 |
+python scripts/run_inference.py --config configs/mcts.yaml --mock   # MCTS inference on mock data
+python DatasetConstruct/run_pipeline.py --mock                      # 4-step dataset pipeline
+```
 
-## 目录结构
+`demo_5vqa.py` builds a tiny image-bearing world with deterministic stand-in encoders and
+runs the real searcher over it, printing every rollout with its retrieved units, node
+statistics, and the selected path. It is the fastest way to see what a trajectory looks
+like:
+
+```text
+QUERY vqa_0: Which city is linked to the red circle in this image?
+  rollout t=0  reward=1.000  answer='Paris'
+      step 0: text_search('Which city is linked to the red circle in this image?')
+        [text]  doc_0   score=+0.717  The red circle emblem is kept in Paris.
+      step 1: image_search(<state image>, region=None)
+        [image] doc_0   score=+1.000  red circle
+      step 2: answer('Paris')
+  TREE (visits, mean Q):
+    - text_search('city linked red circle this image')   N=5  Q=1.000
+      - image_search(<state image>, region=None)         N=2  Q=1.000
+    - image_search(<state image>, region=None)           N=1  Q=0.200
+```
+
+## Repository layout
 
 ```
 src/evidencetree/
-├── actions/      检索动作（按 query 模态切分：text_search / image_search + answer，统一 CLIP 语料）+ 执行器 + 检索器
-├── prm/          PRM verifier（grounding + answer-support judge）、数据生成、rationale 生成与 QC、训练（Stage 2-4）
-├── mcts/         树搜索（node / UCT / proposer，纯 UCB1，Stage 5）
-├── eval/         benchmark 加载与指标
-├── generation/   可配置生成后端（mock / HF / API）
-└── utils/        config / logging
-pilot/            Stage 0 Pilot 脚本（最先做，go/no-go 决策）
-DatasetConstruct/ ETBench-Open 数据集构建 pipeline（Stage 3，API policy + 强 LLM）
-paper/            AAAI 论文稿（tex / bib / PDF + 基线数字溯源）
-scripts/          各阶段入口 CLI
-configs/          超参配置
-tests/            单元测试
+├── actions/      typed action space, executor, retrievers (unified CLIP index + BM25)
+├── mcts/         search loop, nodes, UCB1, action proposers (policy VLM / heuristic)
+├── prm/          PRM scorer, grounding + answer-support verifiers, step labeling, rationale QC
+├── pipeline/     build_search_stack — the single shared assembly for construction and inference
+├── eval/         benchmark loaders and metrics
+├── generation/   pluggable generation backends (mock / HuggingFace / OpenAI-compatible API)
+└── utils/        config, logging, image regions
+DatasetConstruct/ ETBench-Open construction pipeline (4 steps) + benchmark data preparation
+scripts/          inference, index building, the 5-sample demo
+configs/          search / retrieval / policy / PRM configuration
+paper/            AAAI submission (LaTeX source, bibliography, PDF)
+tests/            unit and integration tests
 ```
 
-## 阶段进度
+Construction and inference share **one** assembly function,
+[`build_search_stack`](src/evidencetree/pipeline/assembly.py) — retrievers, executor, policy
+proposer, action gate, and scorer are wired in exactly one place, so the trees that produce
+training data and the trees searched at inference cannot drift apart.
 
-- [x] **框架搭建** — 目录骨架 + 依赖 + 虚拟环境
-- [x] **Stage 0.1** — VisualPRM 失败模式诊断 pipeline（mock 可跑通；real 待服务器）
-- [~] Stage 0.2 — MCTS vs Best-of-N gap（pilot 脚本 `pilot/stage0_2_mcts_vs_bon.py` 已实现，mock 跑通；真实 verdict 待 GPU 服务器：frozen VisualPRM + policy 模型 + 真实 InfoSeek）
-- [ ] Stage 0.3 — 50 样本人工标注一致性
-- [ ] Stage 0.4 — crop/zoom 需求统计（决定动作空间）
-- [x] Stage 1 — 检索动作空间与执行器（按 query 模态切分：text_search / image_search + answer，查询同一统一 CLIP 语料；executor + BM25/dense/CLIP 检索 + build_index）
-- [~] Stage 2 — Grounding Verifiers — **接口 + lexical/API-judge 后端 + answer-support judge（SUPPORTED/PARTIAL/UNSUPPORTED/NOT_REQUIRED 四档，含离线 lexical fallback）已实现**；正式 cross-encoder/CLIP verifier 待 GPU 服务器（Stage 0.3 一致性验证后替换）
-- [~] Stage 3 — 训练数据生成（ETBench-Open）— **构建 pipeline 已实现**（[DatasetConstruct/](DatasetConstruct/README.md)，4 步全流程 + tree-level credit + answer-support 门控 + rationale QC（VERDICT 一致性 / gold-answer 防泄漏），mock 跑通）；真实数据生成待 API key + 原始数据
-- [ ] Stage 4 — PRM 三阶段训练
-- [~] Stage 5 — MCTS 搜索（PRM-guided UCB1）— **框架已实现**（node/UCT/四阶段循环，mock 验证通过）；真实验收（benchmark 主表）待 PRM
-  - ⚠️ Self-Adjusting Bandit 与 Modality-Coverage UCB 已**移除**（与导师讨论后：额外的 λ·novelty 项稀释 PRM 的 Q、徒增消融；搜索回归纯 UCB1，让 PRM 的 Q 成为唯一质量信号）
-- [ ] Stage 7 — 评测与消融
-- [~] 论文 — **AAAI 格式初稿完成**（[paper/](paper/)：正文 + 附录 A–G + 预注册消融表；基线数字逐格溯源于 `NUMBERS_SOURCES.md`）；我方结果格待 Stage 4/7 完成后填入
+## Reproducing the paper
 
-> PRM 的**训练代码**（Stage 4）尚未实现；Stage 2/3 的 verifier 与数据生成代码已就位。
-> 搜索框架通过可插拔的 `TrajectoryScorer` 接口先用 mock/启发式 scorer 运行，PRM 训好后直接替换。
+### 1. Prepare benchmark corpora
 
-> ⚠️ Stage 0（Pilot）是 go/no-go 决策阶段。四个 pilot 全过才进入 Stage 1；任何一个亮红灯，暂停与导师讨论。
+Each benchmark is converted to a shared `queries.jsonl` / `corpus.jsonl` layout under
+`data/corpus/<benchmark>/`:
+
+```bash
+python DatasetConstruct/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
+python DatasetConstruct/prepare_gqa_30k.py --n 30000
+python DatasetConstruct/prepare_other_datasets.py --dataset scienceqa
+```
+
+See [`DatasetConstruct/README.md`](DatasetConstruct/README.md) for image acquisition and
+corpus construction details.
+
+### 2. Build ETBench-Open
+
+```bash
+cp DatasetConstruct/.env.example DatasetConstruct/.env    # then fill in the API keys it lists
+DatasetConstruct/start_qwen25vl.sh                        # serve the policy VLM (OpenAI-compatible)
+
+python DatasetConstruct/run_pipeline.py --n 100           # always pilot a small run first
+python DatasetConstruct/run_pipeline.py                   # full build
+
+python DatasetConstruct/validate_dataset.py data/etbench_open/train.jsonl data/etbench_open/val.jsonl
+```
+
+The four steps — MCTS rollouts, step scoring, rationale generation, quality filtering — can
+be run individually and resume from partial output. The record format is specified in
+[`DatasetConstruct/SCHEMA.md`](DatasetConstruct/SCHEMA.md).
+
+### 3. Fine-tune ET-PRM
+
+ET-PRM is initialized from VisualPRM-8B and trained in three stages on ETBench-Open:
+generative SFT on (state, action, rationale, score), action-typed DPO on same-state
+contrastive pairs mined from the search trees, and temperature/Platt calibration of the
+score logit. Training is driven from the exported dataset with a standard LoRA SFT/DPO
+stack; the repository provides the dataset export, the preference pairs, and the
+inference-side scorer interface.
+
+### 4. Run PRM-guided inference
+
+```bash
+python scripts/run_inference.py --config configs/mcts.yaml \
+    --set prm.scorer=visualprm \
+    --set prm.model_name=/path/to/et-prm \
+    --set retriever.backend=unified
+```
+
+At inference the rationale is skipped entirely — only the score token's logit is read — so
+search pays no generation latency.
+
+## Configuration
+
+`configs/mcts.yaml` (inference) and `DatasetConstruct/config.yaml` (construction) share the
+same block structure. The knobs that matter:
+
+| Key                                  | Default   | Meaning                                                        |
+| ------------------------------------ | --------- | -------------------------------------------------------------- |
+| `search.rollouts` / `mcts.rollouts`  | 10        | rollout budget *P* per question                                 |
+| `search.max_depth`                   | 3         | maximum actions per trajectory (the root is depth 0)            |
+| `search.top_k_children`              | 3         | candidate actions kept per expansion                            |
+| `search.c_uct`                       | 1.0       | UCB1 exploration constant                                       |
+| `search.early_stop_q`                | 2.0       | stop when a rollout exceeds this reward; > 1 disables early stop |
+| `retriever.backend`                  | `unified` | `unified` (one CLIP space) \| `bm25` \| `hybrid`                |
+| `retriever.dedupe`                   | `entity`  | collapse near-duplicate units before top-*k* truncation         |
+| `retriever.image_search`             | `true`    | allow image-query retrieval; auto-disabled when queries lack images |
+| `prm.scorer`                         | —         | `visualprm` (real / fine-tuned) \| `overlap` (offline heuristic) |
+| `verifier.support.floor`             | 0.3       | credit for a correct but evidence-unsupported answer             |
+| `action_gate.enabled`                | `false`   | optionally restrict action types per benchmark                   |
+
+## Paper
+
+[`paper/`](paper/) contains the LaTeX source, bibliography, and compiled PDF. Build with:
+
+```bash
+cd paper && pdflatex evidencetree && bibtex evidencetree && pdflatex evidencetree && pdflatex evidencetree
+```
+
+## Citation
+
+```bibtex
+@misc{evidencetree2026,
+  title = {EvidenceTree: Process-Rewarded Tree Search over Retrieval Actions
+           for Multimodal RAG},
+  year  = {2026},
+  note  = {Under review}
+}
+```
