@@ -128,13 +128,13 @@ etbench_open/
 ├── train.jsonl  val.jsonl  test.jsonl     # samples (§1.1)
 ├── corpus.jsonl                           # doc_id -> {text, title, image_id}: evidence stays traceable
 ├── images/ or image_urls.jsonl            # bundled images where redistribution is allowed, otherwise URLs + a download script (§6)
-├── stats.json                             # distribution report (§5)
+├── stats.json                             # distribution report (§4)
 ├── manifest.json                          # per-split line counts + sha256 + dataset_version
 ├── SCHEMA.md  DATASET_CARD.md  LICENSE
 └── load_dataset.py                        # HF datasets loader whose Features match §1.1
 ```
 
-## 4. Provenance and statistics to publish
+## 4. Statistics to publish
 
 `stats.json` in a release should report: per-split line counts, action-type distribution,
 mean trajectory length, histograms of `score` / `local_grounding` / `outcome_credit`, the
