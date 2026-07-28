@@ -28,6 +28,13 @@ from pathlib import Path
 
 import requests
 
+import sys
+from pathlib import Path
+
+_DC = Path(__file__).resolve().parents[1]   # DatasetConstruct/ (common.py, which
+if str(_DC) not in sys.path:                # also puts src/ on the path)
+    sys.path.insert(0, str(_DC))
+
 from common import append_jsonl, read_jsonl, resolve, write_jsonl
 
 from evidencetree.utils import get_logger

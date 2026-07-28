@@ -141,6 +141,7 @@ class APIGenerator(Generator):
             user_content.append({"type": "text", "text": user_text})
         else:
             user_content = user_text
+        seed = self.config.extra.get("seed")
         resp = self._client.chat.completions.create(
             model=self.model,
             max_tokens=self.config.max_new_tokens,
@@ -149,6 +150,11 @@ class APIGenerator(Generator):
                 {"role": "system", "content": self.config.system_prompt},
                 {"role": "user", "content": user_content},
             ],
+            # Sampling seed: with temperature > 0 this is what makes a run
+            # reproducible, and what separates the 0/1/2 seed replicates.
+            # vLLM and the OpenAI API both honour it; providers that do not
+            # simply ignore the field.
+            **({"seed": int(seed)} if seed is not None else {}),
             # Provider-specific passthrough, e.g. DeepSeek reasoning models
             # need {"thinking": {"type": "disabled"}} or thinking tokens eat
             # the whole max_tokens budget and content comes back empty.

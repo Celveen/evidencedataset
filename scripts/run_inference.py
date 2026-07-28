@@ -15,7 +15,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import statistics
 import sys
 from collections import Counter
 from datetime import datetime
@@ -56,6 +58,25 @@ def build_components(cfg: dict[str, Any], mock: bool):
         cfg, queries, corpus, mock=mock, benchmark=benchmark
     )
     return queries, searcher
+
+
+def seeded_config(cfg: dict[str, Any], seed: int) -> dict[str, Any]:
+    """Return a copy of cfg with every seed knob set to ``seed``.
+
+    Search itself is deterministic given the policy; the run-to-run variance
+    the paper reports comes from policy sampling (temperature > 0) and from
+    which queries are drawn. Both are pinned here, so seeds 0/1/2 are genuine
+    independent replicates rather than three identical runs.
+    """
+    out = copy.deepcopy(cfg)
+    out.setdefault("search", {})["seed"] = seed
+    out.setdefault("data", {})["seed"] = seed
+    for block in ("policy", "generation"):
+        if isinstance(out.get(block), dict):
+            out[block]["seed"] = seed
+            out[block]["mock_seed"] = seed
+    out.setdefault("prm", {})["mock_seed"] = seed
+    return out
 
 
 def run(cfg: dict[str, Any], mock: bool) -> dict[str, Any]:
@@ -102,6 +123,31 @@ def run(cfg: dict[str, Any], mock: bool) -> dict[str, Any]:
     return {"summary": summary, "records": records}
 
 
+def aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Mean +/- standard deviation over seed replicates."""
+    accuracies = [r["summary"]["accuracy"] for r in runs]
+    action_usage: Counter[str] = Counter()
+    for r in runs:
+        action_usage.update(r["summary"]["action_usage"])
+    return {
+        "summary": {
+            "seeds": [r["summary"]["seed"] for r in runs],
+            "n": runs[0]["summary"]["n"],
+            "outcome_metric": runs[0]["summary"]["outcome_metric"],
+            "accuracy": statistics.fmean(accuracies),
+            "accuracy_std": statistics.stdev(accuracies) if len(accuracies) > 1 else 0.0,
+            "accuracy_per_seed": accuracies,
+            "mean_rollouts": statistics.fmean(
+                r["summary"]["mean_rollouts"] for r in runs
+            ),
+            "action_usage": dict(action_usage),
+        },
+        "records": [
+            dict(rec, seed=r["summary"]["seed"]) for r in runs for rec in r["records"]
+        ],
+    }
+
+
 def write_report(result: dict[str, Any], cfg: dict[str, Any], mock: bool) -> Path:
     report_dir = Path(cfg.get("output", {}).get("report_dir", "data/inference_reports"))
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +174,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--mock", action="store_true", help="Mock data + offline scorer.")
     p.add_argument("--n", type=int, default=None, help="Override n_queries.")
     p.add_argument(
+        "--seeds", default="0",
+        help="Comma-separated seeds to run, e.g. --seeds 0,1,2 for the "
+             "three-seed protocol reported in the paper.",
+    )
+    p.add_argument(
         "--set", dest="overrides", action="append", default=[],
         help="Override config, e.g. --set search.rollouts=20 (repeatable).",
     )
@@ -140,18 +191,35 @@ def main(argv=None) -> int:
     if args.n is not None:
         cfg["n_queries"] = args.n
 
-    log.info("=== EvidenceTree MCTS inference (mock=%s) ===", args.mock)
+    seeds = [int(s) for s in str(args.seeds).split(",") if str(s).strip() != ""]
+
+    log.info("=== EvidenceTree MCTS inference (mock=%s, seeds=%s) ===", args.mock, seeds)
     if args.mock:
         log.warning("MOCK mode: synthetic data + heuristic scorer. This validates the search "
             "framework only; the numbers are not real results.")
-    result = run(cfg, mock=args.mock)
-    base = write_report(result, cfg, mock=args.mock)
 
-    s = result["summary"]
-    log.info(
-        "accuracy=%.3f | mean_rollouts=%.1f | action_usage=%s",
-        s["accuracy"], s["mean_rollouts"], s["action_usage"],
-    )
+    runs = []
+    for seed in seeds:
+        if len(seeds) > 1:
+            log.info("--- seed %d ---", seed)
+        result = run(seeded_config(cfg, seed), mock=args.mock)
+        result["summary"]["seed"] = seed
+        runs.append(result)
+        s = result["summary"]
+        log.info(
+            "seed=%d | accuracy=%.3f | mean_rollouts=%.1f | action_usage=%s",
+            seed, s["accuracy"], s["mean_rollouts"], s["action_usage"],
+        )
+
+    report = runs[0] if len(runs) == 1 else aggregate(runs)
+    base = write_report(report, cfg, mock=args.mock)
+    if len(runs) > 1:
+        agg = report["summary"]
+        log.info(
+            "accuracy over %d seeds: %.3f +/- %.3f (%s)",
+            len(runs), agg["accuracy"], agg["accuracy_std"],
+            ", ".join(f"{a:.3f}" for a in agg["accuracy_per_seed"]),
+        )
     log.info("Report written: %s.json", base)
     return 0
 

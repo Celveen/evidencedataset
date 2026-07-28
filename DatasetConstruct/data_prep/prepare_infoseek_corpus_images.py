@@ -9,7 +9,7 @@ subset only:
 2. scan the official ``Wiki6M_ver_1_0.jsonl.gz`` for ``wikipedia_image_url``;
 3. download one representative image per entity;
 4. attach ``image_path`` to every corpus chunk of that entity;
-5. rebuild CLIP indexes so image_search can target corpus-side images.
+5. invalidate the cached CLIP index so image_search picks up the new images.
 
 The full Wiki6M gzip is large, so keep it on the external dataset disk and run
 this script in tmux. The script is idempotent and safe to resume.
@@ -22,6 +22,7 @@ import concurrent.futures as futures
 import gzip
 import json
 import os
+import sys
 import random
 import re
 import shutil
@@ -36,6 +37,10 @@ from PIL import Image
 
 
 DEFAULT_DATA_DIR = Path("data/corpus/infoseek")
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
 DEFAULT_SOURCE_ROOT = Path(
     os.environ.get("INFOSEEK_RAW_ROOT", "data/raw/infoseek")
 )
@@ -819,48 +824,20 @@ def attach_images_to_corpus(
     return len(rows), docs_with_images, len(entities_with_images)
 
 
-def rebuild_clip_indexes(
-    *,
-    data_dir: Path,
-    model_name: str,
-    device: str,
-    batch_size: int,
-) -> dict[str, int]:
-    from evidencetree.actions.retrievers import ClipImageRetriever, CrossModalCLIPRetriever
-    from evidencetree.eval.benchmarks import Document
+def invalidate_unified_index(data_dir: Path) -> dict[str, int]:
+    """Drop the cached unified CLIP index so the next run rebuilds it.
 
-    corpus_path = data_dir / "infoseek_corpus.jsonl"
-    docs = [
-        Document(
-            doc_id=str(row["doc_id"]),
-            text=row["text"],
-            title=row.get("title", ""),
-            image_path=row.get("image_path"),
-        )
-        for row in load_jsonl(corpus_path)
-    ]
-
-    for dirname in ("clip_index", "cross_modal_clip_index"):
-        shutil.rmtree(data_dir / dirname, ignore_errors=True)
-
-    ClipImageRetriever(
-        model_name=model_name,
-        device=device,
-        batch_size=batch_size,
-    ).build(docs).save(data_dir / "clip_index")
-    cross = CrossModalCLIPRetriever(
-        model_name=model_name,
-        device=device,
-        batch_size=batch_size,
-    ).build(docs)
-    cross.save(data_dir / "cross_modal_clip_index")
-    return {
-        "docs": len(docs),
-        "image_docs": sum(1 for doc in docs if doc.image_path),
-        "text_docs": sum(1 for doc in docs if doc.text),
-        "cross_image_docs": cross.image_doc_count,
-        "cross_text_docs": cross.text_doc_count,
-    }
+    Attaching corpus images changes the retrieval units, so any cached index
+    is stale. The pipeline rebuilds (and re-caches) it on the next real run —
+    see evidencetree.pipeline.assembly.
+    """
+    removed = 0
+    for dirname in ("unified_clip_index", "clip_index", "cross_modal_clip_index"):
+        target = data_dir / dirname
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+            removed += 1
+    return {"removed_index_dirs": removed}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -899,10 +876,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proxy", default="")
     parser.add_argument("--shuffle-pending", action="store_true")
     parser.add_argument("--progress-every", type=int, default=500000)
-    parser.add_argument("--model-name", default="clip-ViT-B-32")
-    parser.add_argument("--device", default="cpu")
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--skip-index", action="store_true")
+    parser.add_argument(
+        "--skip-index", action="store_true",
+        help="Keep the cached CLIP index instead of invalidating it.",
+    )
     args = parser.parse_args(argv)
 
     data_dir = args.data_dir
@@ -992,12 +969,7 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(stats, ensure_ascii=False, indent=2), flush=True)
 
     if not args.skip_index:
-        index_stats = rebuild_clip_indexes(
-            data_dir=data_dir,
-            model_name=args.model_name,
-            device=args.device,
-            batch_size=args.batch_size,
-        )
+        index_stats = invalidate_unified_index(data_dir)
         print(json.dumps({"index": index_stats}, ensure_ascii=False, indent=2), flush=True)
     return 0
 

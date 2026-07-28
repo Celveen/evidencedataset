@@ -131,8 +131,11 @@ src/evidencetree/
 ├── eval/         benchmark loaders and metrics
 ├── generation/   pluggable generation backends (mock / HuggingFace / OpenAI-compatible API)
 └── utils/        config, logging, image regions
-DatasetConstruct/ ETBench-Open construction pipeline (4 steps) + benchmark data preparation
-scripts/          inference, index building, the 5-sample demo
+DatasetConstruct/
+├── step1..step4  the four construction stages, each runnable and resumable
+├── data_prep/    per-benchmark corpus and image preparation
+└── *.py          pipeline driver, dataset validator, output inspector, policy server
+scripts/          run_inference.py, demo_5vqa.py
 configs/          search / retrieval / policy / PRM configuration
 tests/            unit and integration tests
 ```
@@ -150,9 +153,9 @@ Each benchmark is converted to a shared `queries.jsonl` / `corpus.jsonl` layout 
 `data/corpus/<benchmark>/`:
 
 ```bash
-python DatasetConstruct/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
-python DatasetConstruct/prepare_gqa_30k.py --n 30000
-python DatasetConstruct/prepare_other_datasets.py --dataset scienceqa
+python DatasetConstruct/data_prep/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
+python DatasetConstruct/data_prep/prepare_gqa_30k.py --n 30000
+python DatasetConstruct/data_prep/prepare_other_datasets.py --dataset scienceqa
 ```
 
 See [`DatasetConstruct/README.md`](DatasetConstruct/README.md) for image acquisition and
@@ -162,7 +165,7 @@ corpus construction details.
 
 ```bash
 cp DatasetConstruct/.env.example DatasetConstruct/.env    # then fill in the API keys it lists
-DatasetConstruct/start_qwen25vl.sh                        # serve the policy VLM (OpenAI-compatible)
+python DatasetConstruct/serve_qwen25vl.py --model /path/to/Qwen2.5-VL-7B-Instruct  # policy VLM
 
 python DatasetConstruct/run_pipeline.py --n 100           # always pilot a small run first
 python DatasetConstruct/run_pipeline.py                   # full build
@@ -187,13 +190,15 @@ inference-side scorer interface.
 
 ```bash
 python scripts/run_inference.py --config configs/mcts.yaml \
+    --seeds 0,1,2 \
     --set prm.scorer=visualprm \
-    --set prm.model_name=/path/to/et-prm \
-    --set retriever.backend=unified
+    --set prm.model_name=/path/to/et-prm
 ```
 
-At inference the rationale is skipped entirely — only the score token's logit is read — so
-search pays no generation latency.
+`--seeds 0,1,2` reproduces the three-seed protocol: each seed pins query sampling, the
+policy's sampling seed, and the search seed, and the report holds the per-seed accuracies
+alongside their mean and standard deviation. At inference the rationale is skipped entirely
+— only the score token's logit is read — so search pays no generation latency.
 
 ## Configuration
 
@@ -203,6 +208,7 @@ same block structure. The knobs that matter:
 | Key                                  | Default   | Meaning                                                        |
 | ------------------------------------ | --------- | -------------------------------------------------------------- |
 | `search.rollouts` / `mcts.rollouts`  | 10        | rollout budget *P* per question                                 |
+| `search.seed`                        | 0         | replicate seed; `--seeds 0,1,2` overrides it per run            |
 | `search.max_depth`                   | 3         | maximum actions per trajectory (the root is depth 0)            |
 | `search.top_k_children`              | 3         | candidate actions kept per expansion                            |
 | `search.c_uct`                       | 1.0       | UCB1 exploration constant                                       |

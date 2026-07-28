@@ -36,6 +36,7 @@ python DatasetConstruct/run_pipeline.py --config DatasetConstruct/config.qwen25v
 python DatasetConstruct/run_pipeline.py --steps 3,4             # a subset of steps
 python DatasetConstruct/run_pipeline.py --force                 # ignore existing output
 python DatasetConstruct/run_pipeline.py --set mcts.rollouts=4   # dotted-key overrides
+python DatasetConstruct/run_pipeline.py --seed 1                # replicate seed (paper: 0/1/2)
 ```
 
 Mock mode loads a synthetic InfoSeek-shaped benchmark, forces the policy and rationale
@@ -52,13 +53,13 @@ continues where it stopped.
 
 | Script | Benchmark | Produces |
 | --- | --- | --- |
-| `prepare_infoseek.py` | InfoSeek | `infoseek_queries.jsonl` from the official annotations |
-| `build_corpus.py` | InfoSeek | `infoseek_corpus.jsonl` — Wikidata entity → Wikipedia plaintext → ~1200-character chunks |
-| `download_infoseek_val_images.py` | InfoSeek | OVEN query images for the validation split (shard by shard, low peak disk) |
-| `prepare_infoseek_corpus_images.py` | InfoSeek | corpus-side Wikipedia images, attaches `image_path` to chunks, rebuilds the CLIP index |
-| `prepare_gqa_30k.py` | GQA | 30k balanced-train subset: `queries.jsonl`, `corpus.jsonl` (scene-graph text), `stats.json` |
-| `download_gqa_assets.sh` | GQA | official questions / scene graphs / images archives |
-| `prepare_other_datasets.py` | ScienceQA, MRAG-Bench, KVQA | `queries.jsonl`, `corpus.jsonl`, `assets/` |
+| `data_prep/prepare_infoseek.py` | InfoSeek | `infoseek_queries.jsonl` from the official annotations |
+| `data_prep/build_corpus.py` | InfoSeek | `infoseek_corpus.jsonl` — Wikidata entity → Wikipedia plaintext → ~1200-character chunks |
+| `data_prep/download_infoseek_val_images.py` | InfoSeek | OVEN query images for the validation split (shard by shard, low peak disk) |
+| `data_prep/prepare_infoseek_corpus_images.py` | InfoSeek | corpus-side Wikipedia images; attaches `image_path` to chunks and invalidates the cached index |
+| `data_prep/prepare_gqa_30k.py` | GQA | 30k balanced-train subset: `queries.jsonl`, `corpus.jsonl` (scene-graph text), `stats.json` |
+| `data_prep/download_gqa_assets.sh` | GQA | official questions / scene graphs / images archives |
+| `data_prep/prepare_other_datasets.py` | ScienceQA, MRAG-Bench, KVQA | `queries.jsonl`, `corpus.jsonl`, `assets/` |
 
 Every benchmark is normalized to the same gitignored layout. InfoSeek keeps the historical
 filenames `infoseek_queries.jsonl` / `infoseek_corpus.jsonl`.
@@ -78,12 +79,12 @@ InfoSeek raw annotations go in `data/corpus/infoseek/raw/`, from
 building), and `infoseek_test.jsonl` (answers withheld, leaderboard only).
 
 ```bash
-python DatasetConstruct/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
-python DatasetConstruct/prepare_infoseek.py --images-dir /path/to/oven_images   # optional
-python DatasetConstruct/build_corpus.py --limit 50   # trial run; omit --limit for all entities
+python DatasetConstruct/data_prep/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
+python DatasetConstruct/data_prep/prepare_infoseek.py --images-dir /path/to/oven_images   # optional
+python DatasetConstruct/data_prep/build_corpus.py --limit 50   # trial run; omit --limit for all entities
 ```
 
-`build_corpus.py` resolves each Wikidata id to its English Wikipedia title, fetches page
+`data_prep/build_corpus.py` resolves each Wikidata id to its English Wikipedia title, fetches page
 plaintext with backoff, caches pages in `raw/wiki_pages.jsonl` (resumable), and chunks them.
 Corpus construction is a one-time offline step; the pipeline itself only queries the local
 index. Queries whose image is unavailable get `image_path=null` and still run the text-only
@@ -91,8 +92,8 @@ path. Scripts that read from an external dataset disk take the source location a
 pass your own paths rather than relying on the built-in defaults:
 
 ```bash
-python DatasetConstruct/prepare_gqa_30k.py --raw-root /path/to/GQA --out-dir data/corpus/gqa --n 30000
-python DatasetConstruct/prepare_other_datasets.py --dataset scienceqa \
+python DatasetConstruct/data_prep/prepare_gqa_30k.py --raw-root /path/to/GQA --out-dir data/corpus/gqa --n 30000
+python DatasetConstruct/data_prep/prepare_other_datasets.py --dataset scienceqa \
     --source-root /path/to/datasets --output-root data/corpus --n 0   # --n 0 = all samples
 ```
 
@@ -106,15 +107,11 @@ To build data for another benchmark, override `benchmark`, `data.data_dir` and t
 released data is generated.
 
 ```bash
-DatasetConstruct/start_qwen25vl.sh                       # serves http://127.0.0.1:8000/v1
 python DatasetConstruct/serve_qwen25vl.py --model /path/to/Qwen2.5-VL-7B-Instruct --port 8000
-python DatasetConstruct/qwen25vl_infer.py --image path/to/image.jpg --prompt "Describe this image."
 ```
 
-`start_qwen25vl.sh` runs `serve_qwen25vl.py` and forwards extra arguments, using the
-repository's `.venv-qwen25vl` interpreter when that virtualenv exists and `$PYTHON` (or
-`python3`) otherwise. `--model` defaults to `models/Qwen2.5-VL-7B-Instruct` relative to the
-repository root, and the server exposes `/v1/chat/completions`, `/v1/models` and `/health`.
+`--model` defaults to `models/Qwen2.5-VL-7B-Instruct` relative to the repository root, and
+the server exposes `/v1/chat/completions`, `/v1/models` and `/health`.
 `config.qwen25vl.yaml` keeps the Step 2 CLIP verifier and the retriever's image encoder on
 CPU (`verifier.device`, `retriever.image.device`) so they do not compete with the served
 model for GPU memory.
@@ -142,7 +139,7 @@ them on the command line.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `data.data_dir` / `n_queries` / `seed` | `data/corpus/infoseek` / 100 / 0 | input directory, query budget, sampling seed |
+| `data.data_dir` / `n_queries` / `seed` | `data/corpus/infoseek` / 100 / 0 | input directory, query budget, sampling seed (`--seed` sets query *and* policy sampling seeds together) |
 | `mcts.rollouts` | 10 | rollout budget *P* per query; upper bound on trajectories per query |
 | `mcts.max_depth` / `top_k_children` | 3 / 3 | maximum actions per trajectory; candidates kept per expansion |
 | `mcts.early_stop_q` | 2.0 | > 1 disables early stopping, so rollouts stay diverse |
@@ -173,8 +170,8 @@ kept/dropped counts, action-type distribution and mean scores.
 python DatasetConstruct/inspect_trajectories.py data/etbench_open/train.jsonl --n 5
 python DatasetConstruct/inspect_trajectories.py <file> --query <query_id> --action image_search --full
 
-# Deterministic, download-free trace of one MCTS trajectory on a mixed text/image scene
-python DatasetConstruct/trace_trajectory.py
+# Deterministic, download-free trace of full trajectories on a mixed text/image scene
+python scripts/demo_5vqa.py
 
 # Check released files against SCHEMA.md (exit 0 = conformant)
 python DatasetConstruct/validate_dataset.py data/etbench_open/train.jsonl data/etbench_open/val.jsonl

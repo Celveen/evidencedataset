@@ -33,7 +33,7 @@ log = get_logger("dataset.pipeline")
 
 _STEPS = {
     1: ("generate trajectories", step1_gen_trajectories.run),
-    2: ("score labels（grounding + tree credit）", step2_score_labels.run),
+    2: ("score labels (grounding + tree credit)", step2_score_labels.run),
     3: ("generate rationales", step3_gen_rationales.run),
     4: ("quality filter -> ETBench-Open", step4_quality_filter.run),
 }
@@ -46,6 +46,10 @@ def main(argv=None) -> int:
     p.add_argument("--mock", action="store_true", help="Offline smoke run (no API calls, no downloads).")
     p.add_argument("--n", type=int, default=None, help="Override data.n_queries.")
     p.add_argument("--force", action="store_true", help="Redo from scratch (ignore existing output).")
+    p.add_argument(
+        "--seed", type=int, default=None,
+        help="Seed for query sampling and policy sampling (paper uses 0/1/2).",
+    )
     p.add_argument("--set", dest="overrides", action="append", default=[])
     args = p.parse_args(argv)
 
@@ -53,6 +57,13 @@ def main(argv=None) -> int:
     cfg = cfgutil.load_config(args.config, overrides=args.overrides)
     if args.n is not None:
         cfg.setdefault("data", {})["n_queries"] = args.n
+    if args.seed is not None:
+        cfg.setdefault("data", {})["seed"] = args.seed
+        cfg.setdefault("mcts", {})["seed"] = args.seed
+        for block in ("policy", "generation"):
+            if isinstance(cfg.get(block), dict):
+                cfg[block]["seed"] = args.seed
+                cfg[block]["mock_seed"] = args.seed
 
     selected = sorted({int(s) for s in args.steps.split(",") if s.strip()})
     if args.mock:

@@ -13,7 +13,7 @@ search:
                                # after the first rollout (saturated yes-probability) and the
                                # tree never expands. Re-enable (e.g. 0.9) once ET-PRM is
                                # calibrated.
-  seed: 0
+  seed: 0                      # run --seeds 0,1,2 to reproduce the three-seed means
 
 data:
   benchmark: infoseek

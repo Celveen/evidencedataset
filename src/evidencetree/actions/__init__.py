@@ -1,8 +1,8 @@
-"""Retrieval action space: definitions, retrievers, and executor (Stage 1).
+"""Retrieval action space: definitions, retrievers, and executor.
 
 Compressed action space:
     text_search(query)            — query the corpus with text
-    image_search(image, region?)  — query the shared CLIP corpus index
+    image_search(image, region?)  — query the same index with the image
     answer(text)                  — terminal
 """
 
@@ -19,10 +19,6 @@ from .action_space import (
 from .executor import ActionExecutor
 from .retrievers import (
     BM25Retriever,
-    ClipImageRetriever,
-    CragImageRetriever,
-    CragWebRetriever,
-    DenseRetriever,
     HybridTextRetriever,
     RetrievalHit,
     UnifiedClipRetriever,
@@ -34,10 +30,6 @@ __all__ = [
     "ActionExecutor",
     "AnswerAction",
     "BM25Retriever",
-    "ClipImageRetriever",
-    "CragImageRetriever",
-    "CragWebRetriever",
-    "DenseRetriever",
     "Evidence",
     "HybridTextRetriever",
     "ImageSearchAction",
