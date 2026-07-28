@@ -60,6 +60,8 @@ Output ONLY the rationale text plus the final VERDICT line."""
 
 _EVIDENCE_ID_RE = re.compile(r"\be\d+\b")
 _VERDICT_RE = re.compile(r"VERDICT:\s*(good|mixed|poor)\b", re.IGNORECASE)
+# Evaluation phrasing that leaks the outcome. Chinese variants are included
+# because the rationale model occasionally answers in Chinese.
 _LEAK_PHRASES = (
     "gold answer", "ground truth", "ground-truth", "correct answer",
     "标准答案", "参考答案", "正确答案",

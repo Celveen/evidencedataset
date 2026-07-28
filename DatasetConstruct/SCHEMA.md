@@ -1,144 +1,195 @@
-# ETBench-Open — 数据集规范（schema spec + dataset card 模板）
+# ETBench-Open — dataset specification
 
-> 本文件是 ETBench-Open 的**发布标准**。所有由 `run_pipeline.py` 产出的数据都应通过
-> `validate_dataset.py` 校验；对外发布前补齐下方 **Dataset Card** 的每一节。
-> 目标：让数据集达到顶会公开数据集的可复现 / 可审计 / 可再分发标准。
+This file is the release specification for ETBench-Open. Everything produced by
+`run_pipeline.py` must pass `validate_dataset.py`, and every section of the dataset card in
+§6 must be filled in before publication. The goal is a dataset that is reproducible,
+auditable and re-distributable.
 
----
+## 1. Record schema
 
-## 1. 记录 schema（字段字典）
+The dataset is **step-level**: one record is one retrieval or answer step of one
+trajectory, and one training sample for the PRM. JSONL, one UTF-8 JSON object per line.
 
-数据集是 **step-level** 的：一条记录 = 一条轨迹中的一个检索/回答步骤，是 PRM 的一个训练样本。
-JSONL，每行一个 UTF-8 JSON 对象。
+### 1.1 Training sample records (`train.jsonl` / `val.jsonl` / `test.jsonl`)
 
-### 1.1 训练样本记录（`train.jsonl` / `val.jsonl` / `test.jsonl`）
+| Field | Type | Nullable | Constraints | Meaning |
+| --- | --- | --- | --- | --- |
+| `sample_id` | str | no | globally unique, `<traj_id>#s<step_index>` | primary key |
+| `traj_id` | str | no | `<query_id>#t<k>` | owning trajectory |
+| `query_id` | str | no | unique within the benchmark | owning query; **the unit of the train/val/test split** |
+| `question` | str | no | non-empty | the original question |
+| `image_path` | str \| null | yes | **relative key or image id** (machine-absolute paths rejected) | query image; null for text-only queries |
+| `state.actions_before` | list[str] | no | may be empty | actions already taken, as `type(input)` strings |
+| `state.evidence_before` | list[obj] | no | see §1.3 | evidence accumulated before this step |
+| `action.type` | str | no | `text_search` \| `image_search` \| `answer` | action type |
+| `action.input` | str | no | non-empty | search query, image-region description, or answer text |
+| `observation_evidence` | list[obj] | no | see §1.3; empty on answer steps | evidence this step retrieved |
+| `local_grounding` | float \| null | yes | `[0,1]`; null **iff** `action.type == "answer"` | relevance of the retrieved results to the question, scored in one CLIP space; the best modality present wins |
+| `outcome_credit` | float | no | `[0,1]` | tree-level credit: Monte Carlo success rate of all trajectories through this node |
+| `n_traj_through` | int | no | `>= 1` | number of trajectories through the node (credit sample size) |
+| `alpha` | float | no | `[0,1]` | dual-source fusion weight |
+| `answer_support` | float \| null | yes | `[0,1]`; numeric only on answer steps | whether the answer is backed by accumulated evidence (null = not judged) |
+| `answer_support_label` | str \| null | yes | `supported` \| `partial` \| `unsupported` \| `not_required` \| `lexical` \| `no_evidence` \| `unverifiable` \| `unparseable` | raw judge label, kept for diagnostics |
+| `support_floor` | float | no | `[0,1]`, default 0.3 | answer-step fusion floor (see `score`) |
+| `unsupported_correct` | bool | no | — | answer step with `outcome >= 0.5` and `support <= unsupported_threshold`: a parametric lucky guess. **Not dropped** — retained as a DPO negative |
+| `gold_answers` | list | no | see §1.2 | reference answers, for leakage checks and analysis; not part of the PRM input |
+| `score` | float | no | `[0,1]` | training target. Non-answer: `alpha*local + (1-alpha)*outcome`. Answer: `outcome*(floor + (1-floor)*support)`, falling back to `outcome` when `support` is null |
+| `score_source` | str | no | `local_plus_outcome` \| `answer_support` \| `outcome_only` | which fusion rule produced `score` |
+| `rationale` | str | no | non-empty, 30–150 whitespace tokens | explanation of the score, with the `VERDICT` line stripped |
+| `rationale_verdict` | str \| null | yes | `good` \| `mixed` \| `poor` | verdict direction, checked against the score |
+| `rationale_backend` | str | no | `api` \| `mock` | rationale source |
+| `rationale_attempts` | int | no | `>= 1` | generation attempts including QC retries |
+| `rationale_qc_pass` | bool | no | **must be true** in a released split | whether QC passed |
+| `rationale_qc_reasons` | list[str] | no | empty when `rationale_qc_pass` | failure reasons |
+| `gen_provenance`* | obj | no | see §1.4 | **required for release**: model versions and seeds |
 
-| 字段 | 类型 | 可空 | 取值/约束 | 含义 |
-|------|------|------|-----------|------|
-| `sample_id` | str | 否 | 全局唯一，`<traj_id>#s<step_index>` | 样本主键 |
-| `traj_id` | str | 否 | `<query_id>#t<k>` | 所属轨迹 |
-| `query_id` | str | 否 | benchmark 内唯一 | 所属 query；**划分 train/val/test 的单位** |
-| `question` | str | 否 | 非空 | 原始问题 |
-| `image_path` | str \| null | 是 | **相对 key 或 image_id**（禁止本机绝对路径） | query 图，纯文本 query 为 null |
-| `state.actions_before` | list[str] | 否 | 可空列表 | 本步之前已执行的动作（`type(input)` 串） |
-| `state.evidence_before` | list[obj] | 否 | 见 §1.3 | 本步之前累积的证据快照 |
-| `action.type` | str | 否 | `text_search` \| `image_search` \| `answer` | 动作类型 |
-| `action.input` | str | 否 | 非空 | text_search=query；image_search=区域描述；answer=答案文本 |
-| `observation_evidence` | list[obj] | 否 | 见 §1.3，answer 步为空 | 本步检索回的证据 |
-| `local_grounding` | float \| null | 是 | `[0,1]`；**当且仅当** `action.type=="answer"` 时为 null | 检索结果 vs 问题的 grounded 分（统一 CLIP 空间，按结果模态打分取 max） |
-| `outcome_credit` | float | 否 | `[0,1]` | tree-level credit：经过该节点的所有轨迹的 outcome 成功率（MC 估计） |
-| `n_traj_through` | int | 否 | `>=1` | 经过该节点的轨迹数（credit 的样本量） |
-| `alpha` | float | 否 | `[0,1]` | 双源融合权重 |
-| `answer_support` | float \| null | 是 | `[0,1]`；**仅 answer 步**可为数值，非 answer 步恒 null | 答案是否被已积累证据支撑（lexical/API judge；判不了= null） |
-| `support_floor` | float | 否 | `[0,1]`，默认 0.3 | answer 步融合下限（见 score 公式） |
-| `unsupported_correct` | bool | 否 | — | answer 步且 `outcome>=0.5` 且 `support<=阈值` → true（参数化蒙对；**不丢弃**，留作 DPO 负样本） |
-| `gold_answers` | list | 否 | 同 §1.2 | 标准答案（QC 泄漏检查与后续分析用；PRM 输入不含此字段） |
-| `score` | float | 否 | `[0,1]` | 非 answer 步：`alpha*local + (1-alpha)*outcome`；answer 步：`outcome*(floor+(1-floor)*support)`，support=null 时退化为 outcome | 训练目标分 |
-| `rationale` | str | 否 | 非空，30–150 token | 强 LLM 解释该 score 的理由（VERDICT 行已剥离） |
-| `rationale_verdict` | str \| null | 是 | `good` \| `mixed` \| `poor` | rationale 的结论方向（与 score 方向一致性 QC 用） |
-| `rationale_backend` | str | 否 | `api` \| `mock` | rationale 来源 |
-| `rationale_attempts` | int | 否 | `>=1` | QC 重生成次数 |
-| `rationale_qc_pass` | bool | 否 | 发布集应**恒为 true** | 是否通过 QC |
-| `rationale_qc_reasons` | list[str] | 否 | pass 时为空 | 未过原因 |
-| `gen_provenance`* | obj | 否 | 见 §1.4 | **发布需补**：生成出处（policy/rationale 模型版本、种子） |
+\* `gen_provenance` is not written by the pipeline; attach it before publishing (§1.4), at
+which point `validate_dataset.py --require-provenance` will check for it.
 
-\* `gen_provenance` 当前 pipeline 未写入，发布前需补（见 §3）。
+### 1.2 Trajectory records (intermediate `*_trajectories.jsonl`, optionally released for reproduction)
 
-### 1.2 轨迹记录（中间产物 `*_trajectories.jsonl`，可选随发布以供复现）
+| Field | Type | Constraints | Meaning |
+| --- | --- | --- | --- |
+| `traj_id` / `query_id` / `question` / `image_path` | — | as in §1.1 | — |
+| `gold_answers` | list | non-empty | string-type answers are a list of acceptable strings; value-type answers are `{wikidata, range: [lo, hi]}` (see §5) |
+| `rollout_t` | int | `>= 0` | index of the rollout that produced this trajectory |
+| `gen_reward` | float | — | generation-time guidance score; **recorded only, never a label** |
+| `final_answer` | str | — | the trajectory's answer |
+| `outcome_em` | float | `{0,1}` | answer correctness (§5) |
+| `steps` | list[obj] | length 2–8 after filtering | `{step_index, action_type, action_input, evidence[]}`; `image_search` steps additionally carry `region` (normalized `[x1,y1,x2,y2]` or null) and the `image_path` actually queried |
 
-| 字段 | 类型 | 约束 | 含义 |
-|------|------|------|------|
-| `traj_id` / `query_id` / `question` / `image_path` | — | 同上 | — |
-| `gold_answers` | list | 非空 | 标准答案（string-type=字符串列表；value-type=`{wikidata, range:[lo,hi]}`，见 §4） |
-| `rollout_t` | int | `>=0` | 第几次 rollout |
-| `gen_reward` | float | — | 生成期引导分（**非标签**，仅记录） |
-| `final_answer` | str | — | 该轨迹答案 |
-| `outcome_em` | float | `{0,1}` 或 `[0,1]` | 答案正确性（见 §4 关于 metric 的说明） |
-| `steps` | list[obj] | 2–8 条 | 每步 `{step_index, action_type, action_input, evidence[], (region, image_path)}` |
+### 1.3 Evidence objects
 
-### 1.3 Evidence 对象
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `evidence_id` | str | unique within a trajectory: `e0`, `e1`, … — this is what a rationale cites |
+| `doc_id` | str | corpus document key (present in trajectory records; omitted from the sample-level snapshots) |
+| `title` | str | document title; may be an empty string |
+| `text` | str | document or chunk body |
+| `image_path` | str \| null | relative key of an image-side result, used for image grounding |
+| `score` | float | retriever similarity |
+| `result_modality` | str \| null | modality of the retrieved **unit**: `text` \| `image`. In the unified CLIP index, corpus text chunks and images are indexed as independent units, so a single search action can return both. `null` means the record came from a legacy document-level retriever |
 
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `evidence_id` | str | 轨迹内唯一，`e0,e1,...`（被 rationale 引用） |
-| `doc_id` | str | 语料 doc 主键（轨迹 evidence 内含；样本快照可省） |
-| `title` | str | 文档标题，可空串 |
-| `text` | str | 文档/片段正文 |
-| `image_path` | str\|null | 图像侧结果的相对 key（图像 grounding 用） |
-| `score` | float | 检索器相似度（轨迹内含；样本快照可省） |
-| `result_modality` | str\|null | 检索单元的实际模态：`text` \| `image`；统一 CLIP 索引下 text/image 单元各自独立入库，一次检索可混合返回两种模态。`null` = 旧版 doc 级检索器产出（无单元模态） |
+Both `text_search` and `image_search` query the same unified index, so either action may
+return either modality; `result_modality` is what distinguishes them downstream.
 
-### 1.4 `gen_provenance`（发布必填）
+### 1.4 `gen_provenance` (required for release)
 
-记录**实际使用**的 policy：正式数据在服务器上用**本地部署的 Qwen2.5-VL-7B**生成（开发期
-冒烟用 DashScope 的 `qwen3-vl-flash` API，因 qwen2.5-vl 已在 DashScope 下线）。`policy_deployment`
-区分 `local` / `api`，避免把开发期 API 模型误记为正式模型。
+Records the policy that was actually used. `policy_deployment` separates `local` from
+`api` so a development-time API model is never mistaken for the released policy.
 
 ```json
-{"policy_model":"Qwen2.5-VL-7B-Instruct","policy_deployment":"local","policy_snapshot":"2026-06",
- "retriever":"bm25+clip-ViT-B-32","rationale_model":"deepseek-v4-pro","rationale_deployment":"api",
- "mcts":{"rollouts":10,"max_depth":3,"c_uct":1.0},"outcome_metric":"infoseek_relaxed",
- "seed":0,"pipeline_commit":"<git-sha>","dataset_version":"v0.1"}
+{"policy_model": "Qwen2.5-VL-7B-Instruct", "policy_deployment": "local",
+ "policy_snapshot": "2026-06", "retriever": "unified-clip-ViT-B-32",
+ "rationale_model": "deepseek-v4-pro", "rationale_deployment": "api",
+ "mcts": {"rollouts": 10, "max_depth": 3, "c_uct": 1.0},
+ "outcome_metric": "infoseek_relaxed", "seed": 0,
+ "pipeline_commit": "<git-sha>", "dataset_version": "v0.1"}
 ```
 
----
+## 2. Invariants enforced by `validate_dataset.py`
 
-## 2. 不变量（validator 强制检查）
+1. Required fields present; `sample_id` unique within a file; the `#s<n>` suffix is present
+   and consistent with the trajectory.
+2. `action.type` is one of the three typed actions; `action.input` is non-empty.
+3. Score domains: `local_grounding`, `outcome_credit`, `score`, `alpha`, `answer_support`
+   all lie in `[0,1]`; `local_grounding is null ⇔ action.type == "answer"`;
+   `answer_support` is numeric only on answer steps.
+4. Score fusion identity holds to 1e-4, using the answer-step formula when
+   `action.type == "answer"` (with `support_floor` defaulting to 0.3) and the non-answer
+   formula otherwise.
+5. `n_traj_through >= 1`.
+6. `|local − outcome| <= max_grounding_outcome_gap` (default 0.7); a released split should
+   contain no sample outside the band.
+7. `rationale_qc_pass == true`, and the rationale is 30–150 whitespace tokens, mentions
+   `action.type`, and cites at least one `evidence_id` visible in this sample. If
+   `rationale_verdict` is present it must not hard-contradict the score: no `poor` when
+   `score >= 0.6`, no `good` when `score <= 0.4`.
+8. Split purity: no `query_id` appears in more than one of the files passed together.
+9. Re-distributable paths: `image_path` must not be machine-absolute — a relative key, an
+   image id, or null.
+10. Trajectory length is a **trajectory-level pre-filter** applied by step 4 to the complete
+    trajectory. Per-sample gap filtering legitimately leaves some trajectories with a single
+    surviving sample; that sample is still a valid independent `(state, action, label)` node,
+    so a short post-filter count is reported as info, not a violation. More samples than
+    `max_steps` is a violation, since it would mean the step-4 gate failed.
+11. Release mode (`--require-provenance`): every record carries `gen_provenance`.
 
-1. `sample_id` 全局唯一；`traj_id` 一致；`<traj_id>#s<n>` 与 `step_index` 对齐。
-2. 分数域：`local_grounding/outcome_credit/score/alpha/answer_support ∈ [0,1]`；`local_grounding is null ⇔ action.type=="answer"`；`answer_support` 仅 answer 步可为数值。
-3. `score == alpha*local + (1-alpha)*outcome`（非 answer 步）；answer 步 `score == outcome*(floor+(1-floor)*support)`（`support=null` 时 `== outcome`），容差 1e-6。
-4. 轨迹长度 ∈ `[min_steps, max_steps]`（默认 2–8）——这是**轨迹级前置门**（在 Step 4 对完整轨迹施加）。注意：per-sample 的 grounding-gap 过滤会合法地让某些轨迹在最终文件里只剩 1 个样本；该样本仍是有效的独立 (state, action, label) 节点，因此**最终文件里某轨迹样本数 < min_steps 不算违规**（仅作 info 报告）。
-5. `|local - outcome| <= max_grounding_outcome_gap`（默认 0.7）——发布集中不应有越界样本。
-6. `rationale_qc_pass == true`，且 rationale 满足：引用 ≥1 个**本样本可见**的 `evidence_id`、提到 `action.type`、30–150 token、**无 GT 泄漏**（不含 "ground truth"/"标准答案" 等评测措辞；不含"可见证据/问题/动作输入之外"的 gold answer 字符串——从证据里引用答案合法，凭空知道答案即泄漏）、`rationale_verdict` 与 score 方向无硬矛盾（score≥0.6 不得 poor，score≤0.4 不得 good）。
-7. **划分纯净**：同一 `query_id` 不跨 train/val/test。
-8. **可再分发**：`image_path` 不得是本机绝对路径（必须是相对 key / image_id / null）。
-9. `n_traj_through >= 1`。
-10.（发布级）每条含 `gen_provenance`；随集附 `manifest.json`（每 split 行数 + sha256）。
+Gold-answer leakage is enforced at generation time rather than by the validator. The
+rationale QC in `src/evidencetree/prm/rationale_gen.py` rejects evaluation phrasing
+("ground truth", "gold answer", "correct answer") and any gold-answer string that does not
+also appear in the visible evidence, question, or action input — quoting an answer found in
+the evidence is legitimate, knowing it otherwise is leakage.
 
----
+## 3. Release bundle
 
-## 3. 发布产物清单（release bundle）
-
-```
+```text
 etbench_open/
-├── train.jsonl  val.jsonl  test.jsonl     # 样本（schema §1.1）
-├── corpus.jsonl                            # 语料 doc_id -> {text,title,image_id}（证据可溯源）
-├── images/  或  image_urls.jsonl           # 图片：能再分发则打包，否则给 URL+下载脚本（见 §5）
-├── stats.json                              # 分布报告（§4 扩展）
-├── manifest.json                           # 行数 + 每文件 sha256 + dataset_version
-├── SCHEMA.md  DATASET_CARD.md  LICENSE      # 规范 + 卡片 + 许可
-└── load_dataset.py                          # HF datasets 加载脚本（Features 对齐 §1.1）
+├── train.jsonl  val.jsonl  test.jsonl     # samples (§1.1)
+├── corpus.jsonl                           # doc_id -> {text, title, image_id}: evidence stays traceable
+├── images/ or image_urls.jsonl            # bundled images where redistribution is allowed, otherwise URLs + a download script (§6)
+├── stats.json                             # distribution report (§5)
+├── manifest.json                          # per-split line counts + sha256 + dataset_version
+├── SCHEMA.md  DATASET_CARD.md  LICENSE
+└── load_dataset.py                        # HF datasets loader whose Features match §1.1
 ```
 
----
+## 4. Provenance and statistics to publish
 
-## 4. 关于 outcome 标签（重要：透明、非黑盒）
+`stats.json` in a release should report: per-split line counts, action-type distribution,
+mean trajectory length, histograms of `score` / `local_grounding` / `outcome_credit`, the
+rationale QC pass rate, drop counts per rule, and the **outcome positive rate reported
+separately per answer type** (§5).
 
-InfoSeek 答案分两类，必须**分类型**用其**官方 rule-based 容差**判定，禁止裸 `exact_match`：
+## 5. Outcome labels
 
-- **STRING 类**：`gold_answers` 是可接受字符串列表 → 归一化后任一匹配即 1（现 EM 对此正确）。
-- **VALUE（数值）类**：`gold` 是 `{wikidata: v, range: [lo, hi]}` → **解析预测中的数值，落在 `[lo,hi]` 内即 1**。
-  当前 `metrics.exact_match` 把答案字符串与该 dict 的 repr 做串比较，**对数值题恒为 0**（已验证：现有真实集 96% outcome≈0 即源于此）。这是确定性、可复现的规则修复，**不是 LLM-judge**，与项目"grounded、不引黑盒"的主张一致。
+`outcome_em` comes from `evidencetree.eval.metrics.exact_match`, which is deterministic and
+rule-based. No LLM judge is involved. InfoSeek answers are of two kinds and each uses its
+own official tolerance:
 
-`stats.json` 发布版需含：train/val/test 行数、动作类型分布、平均步数、`score/local/outcome` 直方图、
-QC 通过率、各 drop 原因计数、**outcome 正例率（按答案类型分别报告）**、Stage 0.3 的 50 样本人工一致性。
+- **String questions.** `gold_answers` is a list of acceptable strings; the prediction is
+  normalized SQuAD-style (lower-cased, punctuation and articles removed) and must equal any
+  one of them.
+- **Value questions.** The gold entry encodes `{"wikidata": v, "range": [lo, hi]}`, as a
+  dict or its string repr. Any number parsed out of the prediction that falls inside
+  `[lo, hi]` counts as correct. A bare string comparison would score every value question 0,
+  so this rule is applied inside `exact_match` itself; `metrics.infoseek_accuracy` exposes
+  the same relaxed rule for evaluation.
 
----
-
-## 5. Dataset Card 模板（DATASET_CARD.md，发布前逐节补全）
+## 6. Dataset card template (`DATASET_CARD.md`, complete every section before release)
 
 ```markdown
 # ETBench-Open
-## Motivation        为什么造、解决什么（retrieval-aware PRM 缺标注数据）
-## Composition       样本/轨迹数、字段（指向 SCHEMA.md）、答案类型分布、多模态占比
-## Collection        来源 = InfoSeek/OVEN/Wikipedia；policy/rationale 模型+版本+日期；MCTS 配置；种子
-## Preprocessing     tree-level credit、grounding 打分、QC 过滤规则、划分策略
-## Uses              训练/评估 retrieval-action PRM；**不适用**：当通用 QA 训练集
-## Distribution      许可（见下）；图片以 URL/ID 分发；版本号 + changelog
-## Maintenance       维护者、联系方式、更新计划、勘误渠道
-## Ethics & License  Wikipedia 图片 CC-BY-SA 等源许可传递；派生集许可；PII 声明（百科类，低风险但需说明）
+
+## Motivation
+Why the dataset exists: retrieval-aware PRMs have no step-level supervision.
+
+## Composition
+Sample and trajectory counts, fields (point at SCHEMA.md), answer-type distribution,
+multimodal share.
+
+## Collection
+Sources (InfoSeek / OVEN / Wikipedia), policy and rationale models with versions and
+dates, MCTS configuration, seeds.
+
+## Preprocessing
+Tree-level credit, grounding scores, QC rules, split strategy.
+
+## Uses
+Training and evaluating retrieval-action PRMs. Not suitable as a general-purpose QA
+training set.
+
+## Distribution
+License (below), images distributed by URL or id, version number and changelog.
+
+## Maintenance
+Maintainer, contact, update plan, errata channel.
+
+## Ethics and license
+Source licenses passed through (Wikipedia images are typically CC-BY-SA), derived-dataset
+license, PII statement.
 ```
 
-**许可红线**：Wikipedia/OVEN 图片通常**不可直接再分发** → 发布 `image_url`/`image_id` + 下载脚本，
-不打包图片字节；并在卡片中显式传递源许可。
+**License constraint.** Wikipedia and OVEN images generally cannot be redistributed
+directly. Publish `image_url` / `image_id` plus a download script rather than image bytes,
+and pass the source licenses through explicitly in the card.
