@@ -22,6 +22,7 @@ The algorithms live in the main package (`src/evidencetree/prm/{verifiers,data_g
 stack with [`build_search_stack`](../src/evidencetree/pipeline/assembly.py) — the same
 function `scripts/run_inference.py` calls — so construction and inference trees cannot
 drift apart. Record formats are specified in [SCHEMA.md](SCHEMA.md).
+Remaining work toward a release is tracked in [ROADMAP.md](ROADMAP.md).
 
 ## Quickstart
 
