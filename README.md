@@ -73,8 +73,8 @@ diagnostics.
 ## Installation
 
 ```bash
-git clone https://github.com/Celveen/EvidenceTree.git
-cd EvidenceTree
+git clone https://github.com/Celveen/evidencedataset.git
+cd evidencedataset
 python -m venv .venv && source .venv/bin/activate     # or conda create -n evidencetree python=3.11
 
 pip install -r requirements/base.txt                  # pure-Python core: BM25, metrics, API clients
@@ -100,7 +100,7 @@ python scripts/demo_5vqa.py                                   # 5-sample end-to-
 python scripts/demo_5vqa.py --proposer llm --scorer visualprm # same, exercising the VLM + PRM code paths
 
 python scripts/run_inference.py --config configs/mcts.yaml --mock   # MCTS inference on mock data
-python DatasetConstruct/run_pipeline.py --mock                      # 4-step dataset pipeline
+python DatasetConstruct/run_pipeline.py --mock                      # 6-step dataset pipeline
 ```
 
 `demo_5vqa.py` runs the real searcher over a tiny image-bearing world with deterministic
@@ -128,13 +128,17 @@ src/evidencetree/
 ├── mcts/         search loop, nodes, UCB1, action proposers (policy VLM / heuristic)
 ├── prm/          PRM scorer, grounding + answer-support verifiers, step labeling, rationale QC
 ├── pipeline/     build_search_stack — the single shared assembly for construction and inference
+├── data/         evaluation-holdout / seed selection, data-prep helpers
 ├── eval/         benchmark loaders and metrics
 ├── generation/   pluggable generation backends (mock / HuggingFace / OpenAI-compatible API)
 └── utils/        config, logging, image regions
 DatasetConstruct/
-├── step1..step4  the four construction stages, each runnable and resumable
-├── data_prep/    per-benchmark corpus and image preparation
-└── *.py          pipeline driver, dataset validator, output inspector, policy server
+├── step1..step6  the six construction stages, each runnable and resumable
+├── configs/      base.yaml + one config per benchmark
+├── data_prep/    per-benchmark corpus and image preparation (ModelScope downloads)
+├── fetch_kit/    InfoSeek download kit for a machine with internet access
+├── splits/       committed evaluation-holdout / construction-seed id lists
+└── *.py          pipeline driver, preflight, audit sheet, validator, inspector
 scripts/          run_inference.py, demo_5vqa.py
 configs/          search / retrieval / policy / PRM configuration
 tests/            unit and integration tests
@@ -149,33 +153,39 @@ training data and the trees searched at inference cannot drift apart.
 
 ### 1. Prepare benchmark corpora
 
-Each benchmark is converted to a shared `queries.jsonl` / `corpus.jsonl` layout under
-`data/corpus/<benchmark>/`:
+Each benchmark is converted to a shared `queries.jsonl` (construction seeds) /
+`eval_queries.jsonl` (held-out evaluation set) / `corpus.jsonl` layout under
+`data/corpus/<benchmark>/`; the id lists of both splits are committed under
+`DatasetConstruct/splits/`.
 
 ```bash
-python DatasetConstruct/data_prep/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
-python DatasetConstruct/data_prep/prepare_gqa_30k.py --n 30000
-python DatasetConstruct/data_prep/prepare_other_datasets.py --dataset scienceqa
+bash DatasetConstruct/data_prep/download_assets.sh                     # models, GQA, ScienceQA (ModelScope)
+python DatasetConstruct/fetch_kit/fetch_infoseek.py all --kit ~/kit    # InfoSeek, on a machine with internet
+python DatasetConstruct/data_prep/import_infoseek_kit.py --kit ~/kit
+python DatasetConstruct/data_prep/prepare_scienceqa.py --src data/raw/ScienceQA
+python DatasetConstruct/data_prep/prepare_gqa.py --src data/raw/GQA --scene-graphs data/raw/GQA/sceneGraphs.zip
 ```
 
-See [`DatasetConstruct/README.md`](DatasetConstruct/README.md) for image acquisition and
-corpus construction details.
+See [`DatasetConstruct/README.md`](DatasetConstruct/README.md) for details.
 
 ### 2. Build ETBench-Open
 
 ```bash
 cp DatasetConstruct/.env.example DatasetConstruct/.env    # then fill in the API keys it lists
-python DatasetConstruct/serve_qwen25vl.py --model /path/to/Qwen2.5-VL-7B-Instruct  # policy VLM
+bash DatasetConstruct/serve_policy_vllm.sh                # policy VLM, one vLLM server per GPU (see site.env.example)
+python DatasetConstruct/preflight.py --benchmark infoseek --check-apis
 
-python DatasetConstruct/run_pipeline.py --n 100           # always pilot a small run first
-python DatasetConstruct/run_pipeline.py                   # full build
-
-python DatasetConstruct/validate_dataset.py data/etbench_open/train.jsonl data/etbench_open/val.jsonl
+python DatasetConstruct/run_pipeline.py --benchmark infoseek --n 100 \
+    --set output.dir=data/pilot/construction --set output.dataset_dir=data/pilot/etbench_open
+python DatasetConstruct/audit_report.py --file data/pilot/construction/infoseek/rationales.jsonl
+python DatasetConstruct/run_pipeline.py --benchmark infoseek      # full build; also scienceqa, gqa
 ```
 
-The four steps — MCTS rollouts, step scoring, rationale generation, quality filtering — can
-be run individually and resume from partial output. The record format is specified in
-[`DatasetConstruct/SCHEMA.md`](DatasetConstruct/SCHEMA.md).
+The six steps — MCTS rollouts, free step labels, filtering and budgeted sampling,
+answer-support judging, rationale generation, and finalization (splits, preference
+pairs, provenance, statistics, validation) — can be run individually and resume from
+partial output. The design is in [`DatasetConstruct/DESIGN.md`](DatasetConstruct/DESIGN.md)
+and the record format in [`DatasetConstruct/SCHEMA.md`](DatasetConstruct/SCHEMA.md).
 
 ### 3. Fine-tune ET-PRM
 
@@ -202,7 +212,7 @@ alongside their mean and standard deviation. At inference the rationale is skipp
 
 ## Configuration
 
-`configs/mcts.yaml` (inference) and `DatasetConstruct/config.yaml` (construction) share the
+`configs/mcts.yaml` (inference) and `DatasetConstruct/configs/*.yaml` (construction) share the
 same block structure. The knobs that matter:
 
 | Key                                  | Default   | Meaning                                                        |
@@ -213,7 +223,8 @@ same block structure. The knobs that matter:
 | `search.top_k_children`              | 3         | candidate actions kept per expansion                            |
 | `search.c_uct`                       | 1.0       | UCB1 exploration constant                                       |
 | `search.early_stop_q`                | 2.0       | stop when a rollout exceeds this reward; > 1 disables early stop |
-| `retriever.backend`                  | `unified` | `unified` (one CLIP space) \| `bm25` \| `hybrid`                |
+| `retriever.backend`                  | `hybrid`  | `hybrid` (BM25 + one CLIP space) \| `unified` \| `bm25`         |
+| `retriever.top_k` / `image.top_k`    | 3 / 1     | results per text_search / image_search                          |
 | `retriever.dedupe`                   | `entity`  | collapse near-duplicate units before top-*k* truncation         |
 | `retriever.image_search`             | `true`    | allow image-query retrieval; auto-disabled when queries lack images |
 | `prm.scorer`                         | —         | `visualprm` (real / fine-tuned) \| `overlap` (offline heuristic) |

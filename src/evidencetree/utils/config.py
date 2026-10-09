@@ -3,6 +3,10 @@
 We deliberately avoid a hard dependency on hydra/omegaconf so the base install
 stays light. A config is just a nested ``dict``; ``--set a.b=c`` style overrides
 are applied on top.
+
+A config may inherit from another one with a top-level ``_base_: other.yaml``
+key (resolved relative to the inheriting file). Nested dicts are merged key by
+key; any other value in the inheriting file replaces the base value.
 """
 
 from __future__ import annotations
@@ -26,11 +30,7 @@ def load_config(path: str | Path, overrides: Iterable[str] | None = None) -> dic
     Returns:
         The merged config as a nested dict.
     """
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-    with path.open("r", encoding="utf-8") as f:
-        cfg: dict[str, Any] = yaml.safe_load(f) or {}
+    cfg = _load_with_base(Path(path), chain=())
 
     for override in overrides or []:
         if "=" not in override:
@@ -38,6 +38,34 @@ def load_config(path: str | Path, overrides: Iterable[str] | None = None) -> dic
         key, raw_value = override.split("=", 1)
         _set_dotted(cfg, key.strip(), _parse_value(raw_value.strip()))
     return cfg
+
+
+def _load_with_base(path: Path, chain: tuple[Path, ...]) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    resolved = path.resolve()
+    if resolved in chain:
+        raise ValueError(f"Circular _base_ chain: {' -> '.join(map(str, chain + (resolved,)))}")
+    with path.open("r", encoding="utf-8") as f:
+        cfg: dict[str, Any] = yaml.safe_load(f) or {}
+    base = cfg.pop("_base_", None)
+    if not base:
+        return cfg
+    base_path = Path(base)
+    if not base_path.is_absolute():
+        base_path = path.parent / base_path
+    return deep_merge(_load_with_base(base_path, chain + (resolved,)), cfg)
+
+
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Return ``base`` updated by ``override``; nested dicts merge key by key."""
+    out = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
 
 
 def _parse_value(raw: str) -> Any:

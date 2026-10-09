@@ -110,3 +110,24 @@ def test_unknown_action_type_raises(executor):
 
     with pytest.raises(TypeError):
         executor.execute(SearchState(question="q"), MysteryAction())
+
+
+def test_executor_cache_reuses_hits_but_numbers_evidence_per_state():
+    from evidencetree.actions import ActionExecutor, SearchState, TextSearchAction
+
+    class CountingRetriever:
+        calls = 0
+
+        def search(self, query, top_k=5):
+            CountingRetriever.calls += 1
+            from evidencetree.actions import RetrievalHit
+            return [RetrievalHit(doc_id="d", text=f"about {query}", score=1.0)]
+
+    ex = ActionExecutor(text_retriever=CountingRetriever(), top_k=1, cache_size=10)
+    s1 = ex.execute(SearchState(question="q"), TextSearchAction(query="x"))
+    s2 = ex.execute(s1, TextSearchAction(query="x"))
+    assert CountingRetriever.calls == 1
+    assert [e.evidence_id for e in s2.evidence] == ["e0", "e1"]
+    uncached = ActionExecutor(text_retriever=CountingRetriever(), top_k=1)
+    uncached.execute(SearchState(question="q"), TextSearchAction(query="x"))
+    assert CountingRetriever.calls == 2

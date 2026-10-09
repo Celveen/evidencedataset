@@ -111,3 +111,64 @@ def test_verifier_lexical_fallback_without_clip():
     assert v.score(question=q, action_type="text_search", result_texts=[]) == 0.0
     assert v.score(question=q, action_type="image_search", result_image_paths=["/i.jpg"]) == 0.5
     assert v.score(question=q, action_type="image_search", result_image_paths=[]) == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Windowed text scoring, details, redundancy
+# --------------------------------------------------------------------------- #
+def test_text_windows_split_long_chunks_with_title():
+    from evidencetree.prm.verifiers import text_windows
+
+    words = " ".join(f"w{i}" for i in range(100))
+    wins = text_windows(words, title="Page", words=48, stride=40)
+    assert len(wins) == 3 and all(w.startswith("Page: ") for w in wins)
+    assert text_windows("short text", title="T") == ["T: short text"]
+    assert text_windows(words, words=0) == [words]
+
+
+def test_relevance_late_in_a_chunk_counts():
+    """Truncating CLIP input would miss 'red' at the end; windows find it."""
+    s = _scorer()
+    long_text = " ".join(["blue"] * 120) + " red"
+    assert s.score_text_results("a red thing", [long_text]) > 0.9
+    no_window = ClipGroundingScorer(text_encoder=lambda t: _fake_text_encoder([x[:50] for x in t]),
+                                    image_encoder=_fake_image_encoder, window_words=0)
+    assert no_window.score_text_results("a red thing", [long_text]) < 0.1
+
+
+def test_score_results_reports_best_result(red_blue):
+    red, _ = red_blue
+    v = GroundingVerifier(clip_scorer=_scorer())
+    detail = v.score_results(question="a red object", action_type="image_search", results=[
+        {"text": "blue sea", "title": ""},
+        {"text": "", "title": "Rose", "image_path": red},
+    ])
+    assert detail.score > 0.9 and detail.modality == "image" and detail.best_index == 1
+    assert detail.raw_cos == pytest.approx(1.0)
+    assert v.score_results(question="q", action_type="answer", results=[]).score is None
+    assert v.score_results(question="q", action_type="text_search", results=[]).score == 0.0
+
+
+def test_image_resolver_maps_portable_keys(red_blue, tmp_path):
+    red, _ = red_blue
+    from pathlib import Path
+
+    s = ClipGroundingScorer(text_encoder=_fake_text_encoder, image_encoder=_fake_image_encoder,
+                            image_resolver=lambda key: str(Path(red).parent / key))
+    assert s.score_image_results("a red object", [Path(red).name]) > 0.9
+
+
+def test_redundancy_clip_and_lexical(red_blue):
+    red, blue = red_blue
+    v = GroundingVerifier(clip_scorer=_scorer())
+    new_red = {"doc_id": "d9", "text": "red car", "title": ""}
+    assert v.redundancy(new_red, []) == 0.0
+    assert v.redundancy(new_red, [{"doc_id": "d1", "text": "red rose", "title": ""}]) == pytest.approx(1.0)
+    assert v.redundancy(new_red, [{"doc_id": "d1", "text": "blue sea", "title": ""}]) == pytest.approx(0.0)
+    img = {"doc_id": "i1", "text": "", "image_path": red}
+    assert v.redundancy(img, [{"doc_id": "i2", "text": "", "image_path": blue}]) == pytest.approx(0.0)
+    assert v.redundancy(img, [{"doc_id": "i1", "text": "", "image_path": red}]) == 1.0
+    lex = GroundingVerifier(clip_scorer=None)
+    a = {"doc_id": "a", "text": "Paris is the capital of France", "title": ""}
+    assert lex.redundancy(a, [dict(a, doc_id="b")]) == pytest.approx(1.0)
+    assert lex.redundancy(a, [{"doc_id": "c", "text": "Tokyo Japan", "title": ""}]) == 0.0

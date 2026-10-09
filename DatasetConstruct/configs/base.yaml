@@ -1,0 +1,148 @@
+# ETBench-Open construction — settings shared by all benchmarks.
+# infoseek.yaml / scienceqa.yaml / gqa.yaml inherit this file (`_base_`) and add
+# their data paths. All paths are relative to the repository root.
+# Design rationale: DatasetConstruct/DESIGN.md.
+
+dataset_version: v0.1
+
+data:
+  n_queries: 20000               # construction seed queries per benchmark (paper §4)
+  seed: 0
+  require_splits: true           # refuse to run without the seed / eval id files
+
+mcts:                            # step 1 rollouts; same semantics as configs/mcts.yaml `search`
+  rollouts: 10                   # P
+  max_depth: 3
+  top_k_children: 3
+  c_uct: 1.0
+  early_stop_q: 2.0              # > 1 disables early stop: every query spends the full P
+  expansion: diverse             # keep one child per proposed action type first (DESIGN §4)
+  seed: 0
+
+step1:
+  concurrency: 32                # queries searched in parallel; vLLM batches the requests
+
+policy:                          # training-free policy VLM (paper §5.1), served by vLLM
+  backend: api
+  provider: openai               # vLLM speaks the OpenAI protocol
+  model: Qwen2.5-VL-7B-Instruct  # must equal the served model name
+  snapshot: Qwen/Qwen2.5-VL-7B-Instruct (ModelScope)
+  base_url:                      # one server per POLICY_GPUS entry (serve_policy_vllm.sh,
+    - http://127.0.0.1:8100/v1   # ports 8100+); requests rotate. Keep this list equal to
+    - http://127.0.0.1:8101/v1   # the servers actually running (preflight.py checks).
+    - http://127.0.0.1:8102/v1
+    - http://127.0.0.1:8103/v1
+  api_key_env: LOCAL_QWEN_API_KEY
+  system_prompt: You are a careful multimodal research assistant. Follow the instructions exactly.
+  max_new_tokens: 256            # proposals are multi-line JSON
+  temperature: 0.7               # > 0 so rollouts differ
+  timeout: 120
+  mock_accuracy: 0.6             # mock backend only
+  mock_seed: 0
+
+retriever:
+  backend: hybrid                # BM25 over the text side + ONE CLIP index (paper §3.2)
+  dedupe: entity                 # one unit per entity before top-k truncation
+  top_k: 3                       # text_search results (paper §5.1)
+  image_search: true
+  clip_model: models/clip-ViT-B-32   # local copy; `models` may link to a shared weights dir
+  cache_size: 200000             # memoized retrieval calls (MCTS repeats queries)
+  image:
+    model_name: models/clip-ViT-B-32
+    device: null                 # null = sentence-transformers default; pin with CUDA_VISIBLE_DEVICES
+    batch_size: 256
+    top_k: 1                     # image_search results (paper §5.1)
+
+verifier:                        # step 2 grounding (paper Eq. 3)
+  backend: clip                  # clip | lexical (offline fallback)
+  clip_model: models/clip-ViT-B-32
+  device: null
+  window_words: 48               # CLIP reads <= 77 tokens: score chunks as max over windows
+  window_stride: 40
+  text_cos_lo: 0.5               # calibration bands; refit from the pilot's raw cosines
+  text_cos_hi: 0.9
+  image_cos_lo: 0.15
+  image_cos_hi: 0.32
+  alpha: 0.5                     # score = alpha * local + (1 - alpha) * outcome
+  support:                       # step 4 answer-support gate (paper Eq. 6)
+    backend: api                 # api | lexical | off
+    floor: 0.3
+    unsupported_threshold: 0.3
+    concurrency: 8
+    generation:
+      backend: api
+      provider: openai
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      system_prompt: You are a strict evidence-support judge. Reply with exactly one word.
+      max_new_tokens: 8
+      temperature: 0.0
+      timeout: 60
+      extra_body:                # reasoning models: thinking tokens would eat the budget
+        thinking: {type: disabled}
+
+rationale:                       # step 5
+  # ---- Switching the rationale model (same keys work for verifier.support.generation)
+  # Moonshot / Kimi, OpenAI protocol (pay-as-you-go key from platform.moonshot.cn):
+  #   provider: openai
+  #   model: <Kimi model id listed in your Moonshot console, non-thinking variant>
+  #   base_url: https://api.moonshot.cn/v1
+  #   api_key_env: MOONSHOT_API_KEY
+  #   and DELETE extra_body (its `thinking` switch is DeepSeek-specific)
+  # Kimi Code / coding-plan key, Anthropic protocol:
+  #   provider: anthropic
+  #   model: <model id from the Kimi Code docs>
+  #   base_url: <Anthropic-compatible base URL from the Kimi Code docs>
+  #   api_key_env: KIMI_CODE_API_KEY
+  # If the construction machine cannot reach the provider, run
+  # step 5 where it can (`step5_gen_rationales.py --input/--output`, DESIGN §9),
+  # and try any new model first with `try_rationale_model.py --n 3`.
+  backend: api                   # api | mock
+  batch: group                   # group = siblings (same state) share one request; node = one each
+  max_group: 6                   # candidates per request at most
+  concurrency: 16
+  max_attempts: 3
+  evidence_chars:                # prompt truncation per evidence item (cost)
+    before: 300                  # earlier evidence, search steps
+    before_answer: 1500          # earlier evidence, answer steps (their support lives there)
+    observation: 1500            # what this step retrieved
+  generation:
+    backend: api
+    provider: openai
+    model: deepseek-v4-pro
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    system_prompt: You write concise, evidence-grounded training rationales for a reward model.
+    max_new_tokens: 300
+    temperature: 0.3
+    timeout: 120
+    extra_body:
+      thinking: {type: disabled}
+
+quality:
+  min_steps: 2                   # trajectory length gate [2, 8] (paper §4)
+  max_steps: 8
+  max_grounding_outcome_gap: 0.7
+  dedupe_within_query: true
+  val_fraction: 0.05             # query-disjoint validation split
+  test_fraction: 0.0             # benchmark eval sets are held out separately
+
+sampling:                        # step 3
+  budget_per_query: 3            # sampled nodes = 3 x seed queries (paper: 60K from 20K)
+  max_per_query: 9
+  seed: 0
+
+pairs:                           # step 6 same-state preference pairs
+  margin: 0.3
+  answer_now_vs_search_more: true
+
+action_gate:
+  enabled: false
+
+prm:
+  scorer: overlap                # step-1 guidance signal only (NOT the dataset label)
+
+output:
+  dir: data/construction                 # <dir>/<benchmark>/<stage>.jsonl
+  dataset_dir: data/etbench_open         # <dataset_dir>/<benchmark>/{train,val}.jsonl

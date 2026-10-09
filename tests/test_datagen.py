@@ -251,3 +251,124 @@ def test_mock_rationale_generator_passes_qc():
     assert "[e0]" in fields["rationale"]
     assert fields["rationale_verdict"] == "good"
     assert "VERDICT" not in fields["rationale"]
+
+
+# --------------------------------------------------------------------------- #
+# Two-phase support judging, node keys, evidence formatting
+# --------------------------------------------------------------------------- #
+from evidencetree.prm.data_gen import (  # noqa: E402
+    PENDING,
+    SKIPPED_INCORRECT,
+    iter_label_steps,
+    judge_answer_samples,
+    node_key,
+    support_evidence_lines,
+)
+
+
+def _two_answer_trajs():
+    ev = {"evidence_id": "e0", "doc_id": "d0", "title": "Hall of Fame",
+          "text": "It opened on September 7, 1963.", "score": 1.0}
+    right = _traj("t1", "q1", [("text_search", "A"), ("answer", "September 7, 1963")], 1.0)
+    wrong = _traj("t2", "q1", [("text_search", "A"), ("answer", "1970")], 0.0)
+    for t in (right, wrong):
+        t["steps"][0]["evidence"] = [dict(ev)]
+    return [right, wrong]
+
+
+def test_node_keys_link_siblings_and_repeats():
+    samples = label_steps(_two_answer_trajs(), verifier=GroundingVerifier(), defer_support=True)
+    search_1, answer_1, search_2, answer_2 = samples
+    assert search_1["node_key"] == search_2["node_key"]          # same node, two trajectories
+    assert search_1["parent_key"] == node_key("q1", ())
+    assert answer_1["parent_key"] == answer_2["parent_key"] == search_1["node_key"]
+    assert answer_1["node_key"] != answer_2["node_key"]          # siblings
+    assert answer_1["traj_len"] == 2 and answer_1["depth"] == 1
+
+
+def test_deferred_support_then_judge_only_correct_answers():
+    class CountingJudge(AnswerSupportVerifier):
+        def __init__(self):
+            super().__init__(backend="lexical")
+            self.calls = 0
+
+        def classify(self, **kw):
+            self.calls += 1
+            return super().classify(**kw)
+
+    samples = label_steps(_two_answer_trajs(), verifier=GroundingVerifier(), defer_support=True)
+    answers = [s for s in samples if s["action"]["type"] == "answer"]
+    assert all(s["answer_support_label"] == PENDING for s in answers)
+    judge = CountingJudge()
+    done = list(judge_answer_samples(samples, judge))
+    assert judge.calls == 1                                       # the wrong answer is skipped
+    by_answer = {s["action"]["input"]: s for s in done if s["action"]["type"] == "answer"}
+    assert by_answer["1970"]["answer_support_label"] == SKIPPED_INCORRECT
+    assert by_answer["1970"]["score"] == 0.0
+    right = by_answer["September 7, 1963"]
+    assert right["answer_support"] == pytest.approx(1.0) and right["score"] == pytest.approx(1.0)
+    assert right["score_source"] == "answer_support"
+
+
+def test_support_lines_keep_titles_and_images():
+    lines = support_evidence_lines([
+        {"evidence_id": "e0", "title": "Pro Football Hall of Fame", "text": "", "image_path": "a.jpg"},
+        {"evidence_id": "e1", "title": "History", "text": "Opened in 1963."},
+        {"evidence_id": "e2", "title": "", "text": ""},
+    ])
+    assert lines == ["[e0] [image] Pro Football Hall of Fame", "[e1] History: Opened in 1963."]
+
+
+def test_marginal_gain_penalizes_repeated_evidence():
+    ev = {"evidence_id": "e0", "doc_id": "d0", "title": "T", "text": "how heavy bird grams 400"}
+    t = _traj("t1", "q1", [("text_search", "A"), ("text_search", "B"), ("answer", "x")], 1.0)
+    t["question"] = "How heavy is this bird in grams?"
+    t["steps"][0]["evidence"] = [dict(ev)]
+    t["steps"][1]["evidence"] = [dict(ev, evidence_id="e1")]
+    first, second, _ = label_steps([t], verifier=GroundingVerifier(), defer_support=True)
+    assert first["evidence_redundancy"] == 0.0 and first["marginal_gain"] == first["local_grounding"]
+    assert second["n_repeat_docs"] == 1 and second["evidence_redundancy"] == 1.0
+    assert second["marginal_gain"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# Echo / verbatim-copy QC (found by probing local models)
+# --------------------------------------------------------------------------- #
+from evidencetree.prm.rationale_gen import copied_span, salvage_rationale  # noqa: E402
+
+
+def _probe_sample():
+    return {
+        "sample_id": "t1#s1", "question": "When did this building open?",
+        "state": {"actions_before": [], "evidence_before": []},
+        "action": {"type": "text_search", "input": "opening date"},
+        "observation_evidence": [{"evidence_id": "e1", "title": "Hall", "text":
+            "The Pro Football Hall of Fame is the hall of fame for professional American "
+            "football, located in Canton, Ohio, and it opened on September 7, 1963."}],
+        "score": 0.9, "gold_answers": ["September 7, 1963"],
+    }
+
+
+def test_echoed_prompt_is_salvaged_or_rejected():
+    good = ("This text_search step retrieves [e1], a page about the hall that states when it "
+            "opened, which directly answers what the question asks and makes the next step an "
+            "easy answer; the query stays faithful to the question and the evidence is on target.")
+    echoed = ("Action taken: text_search(opening date)\nEvidence retrieved BY this action:\n[e1] Hall: ...\n"
+              f"Rationale: {good}\nVERDICT: good")
+    assert salvage_rationale(echoed).startswith("This text_search step")
+    ok, reasons = check_rationale(echoed, _probe_sample())
+    assert ok, reasons                                    # salvaged: only the rationale counts
+    raw_echo = "Action taken: text_search(opening date) " + good + "\nVERDICT: good"
+    ok, reasons = check_rationale(raw_echo, _probe_sample())
+    assert not ok and any("echoes the prompt" in r for r in reasons)
+
+
+def test_verbatim_copy_is_rejected():
+    s = _probe_sample()
+    copy = ("This text_search step retrieves [e1]: the hall of fame for professional american "
+            "football located in canton ohio and it opened on september, which answers the question "
+            "and gives the next step everything it needs to answer well.\nVERDICT: good")
+    assert copied_span(copy, s) is not None
+    ok, reasons = check_rationale(copy, s)
+    assert not ok and any("verbatim" in r for r in reasons)
+    assert copied_span("it opened on September 7, 1963 per [e1]", s) is None   # short quotes are fine

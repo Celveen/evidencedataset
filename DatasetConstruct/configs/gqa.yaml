@@ -1,0 +1,12 @@
+# GQA: compositional questions over real images; the corpus is one document per
+# train-balanced image (image + scene-graph text). Seeds: train-balanced (one
+# question per image); evaluation: test-dev balanced, whose images are not in
+# the corpus. Data: data_prep/prepare_gqa.py.
+_base_: base.yaml
+
+benchmark: gqa
+
+data:
+  data_dir: data/corpus/gqa
+  seed_ids: DatasetConstruct/splits/gqa/seed_ids.txt
+  eval_ids: DatasetConstruct/splits/gqa/eval_ids.txt

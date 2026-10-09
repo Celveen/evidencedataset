@@ -1,0 +1,10 @@
+# InfoSeek: fine-grained entity questions over a 60K-entity Wikipedia corpus.
+# Data: fetch_kit/fetch_infoseek.py (local machine) -> data_prep/import_infoseek_kit.py.
+_base_: base.yaml
+
+benchmark: infoseek
+
+data:
+  data_dir: data/corpus/infoseek
+  seed_ids: DatasetConstruct/splits/infoseek/seed_ids.txt
+  eval_ids: DatasetConstruct/splits/infoseek/eval_ids.txt

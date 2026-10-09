@@ -2,8 +2,9 @@
 
 Checks the step-level sample records (train/val/test.jsonl) for: required fields,
 types, score ranges, the local-grounding⇔answer rule, the score-fusion identity,
-trajectory length, grounding-outcome gap, rationale QC, re-distributable image
-paths, and (across files) train/val/test query-disjointness.
+released answer-support labels, one record per tree node, trajectory length,
+grounding-outcome gap, rationale QC, re-distributable image paths, and (across
+files) train/val/test query-disjointness.
 
 Stdlib only. Exit code 0 = conformant, 1 = hard violations found.
 
@@ -26,6 +27,10 @@ from typing import Any
 TOL = 1e-6
 _EVID_RE = re.compile(r"\be\d+\b")
 ACTION_TYPES = {"text_search", "image_search", "answer"}
+SUPPORT_LABELS = {
+    None, "supported", "partial", "unsupported", "not_required", "lexical",
+    "no_evidence", "unverifiable", "unparseable", "skipped_incorrect",
+}
 
 
 def _is_num(x: Any) -> bool:
@@ -81,6 +86,16 @@ def validate_sample(s: dict[str, Any], *, min_steps, max_steps, max_gap,
         v.append(f"answer_support={support} out of [0,1]")
     if atype != "answer" and support is not None:
         v.append("non-answer step must have answer_support=null")
+    label = s.get("answer_support_label")
+    if label not in SUPPORT_LABELS:
+        v.append(f"answer_support_label {label!r} is not a released label (unjudged answer?)")
+    if label == "skipped_incorrect" and (support is not None or s["outcome_credit"] > TOL):
+        v.append("skipped_incorrect requires outcome_credit=0 and answer_support=null")
+
+    # Trajectory length (trajectory-level pre-filter, SCHEMA §2.10)
+    traj_len = s.get("traj_len")
+    if traj_len is not None and not (min_steps <= traj_len <= max_steps):
+        v.append(f"traj_len={traj_len} outside [{min_steps}, {max_steps}]")
 
     # Score fusion identity
     outcome = s["outcome_credit"]
@@ -147,6 +162,7 @@ def validate_file(path: Path, **kw) -> dict[str, Any]:
     samples = [json.loads(l) for l in path.open(encoding="utf-8") if l.strip()]
     violations: list[str] = []
     seen_ids: set[str] = set()
+    seen_nodes: set[tuple[str, str]] = set()
     steps_per_traj: Counter = Counter()
     atypes: Counter = Counter()
     for s in samples:
@@ -154,6 +170,11 @@ def validate_file(path: Path, **kw) -> dict[str, Any]:
         if sid in seen_ids:
             violations.append(f"{sid}: duplicate sample_id")
         seen_ids.add(sid)
+        if s.get("node_key"):  # one record per tree node (SCHEMA §2.1)
+            node = (s.get("query_id"), s["node_key"])
+            if node in seen_nodes:
+                violations.append(f"{sid}: duplicate node {s['node_key']} (same state and action)")
+            seen_nodes.add(node)
         steps_per_traj[s.get("traj_id")] += 1
         atypes[s.get("action", {}).get("type")] += 1
         violations.extend(validate_sample(s, **kw))

@@ -1,4 +1,8 @@
-"""Convert leakage-safe samples from locally downloaded VQA datasets.
+"""Convert leakage-safe samples from locally downloaded VQA datasets
+(MRAG-Bench, KVQA — auxiliary benchmarks outside ETBench-Open).
+
+ETBench-Open's three benchmarks have dedicated preparation scripts:
+prepare_scienceqa.py, prepare_gqa.py and import_infoseek_kit.py.
 
 The generated directories use EvidenceTree's shared format:
 
@@ -42,7 +46,7 @@ log = get_logger("dataset.prepare_other")
 DEFAULT_SOURCE_ROOT = Path(
     os.environ.get("EVIDENCETREE_RAW_ROOT", "data/raw")
 )
-DATASETS = ("scienceqa", "mrag_bench", "kvqa")
+DATASETS = ("mrag_bench", "kvqa")
 _MRAG_NOISE_TOKENS = {
     "archive",
     "by",
@@ -131,80 +135,6 @@ def _mrag_doc_text(path: Path) -> str:
         f"Image filename weak label: {label}. "
         f"Original filename: {path.name}."
     )
-
-
-SCIENCEQA_SPLITS = {
-    "train": "train-00000-of-00001-1028f23e353fbe3e.parquet",
-    "validation": "validation-00000-of-00001-6c7328ff6c84284c.parquet",
-    "test": "test-00000-of-00001-f0e719df791966ff.parquet",
-}
-
-
-def prepare_scienceqa(source_root: Path, output_root: Path, n: int = 1) -> None:
-    data_dir = source_root / "ScienceQA/dataset_hf/data"
-    limit = None if n == 0 else n
-    rows = []
-    for split, filename in SCIENCEQA_SPLITS.items():
-        path = data_dir / filename
-        for candidate in _iter_parquet_rows(path):
-            if (candidate.get("image") or {}).get("bytes"):
-                candidate["_et_split"] = split
-                rows.append(candidate)
-                if limit is not None and len(rows) >= limit:
-                    break
-        if limit is not None and len(rows) >= limit:
-            break
-    if limit is not None and len(rows) < limit:
-        raise RuntimeError(f"ScienceQA contains only {len(rows)} image samples.")
-
-    queries = []
-    corpus = []
-    for index, row in enumerate(rows):
-        split = row["_et_split"]
-        image_path = _save_image(
-            row["image"], output_root / f"scienceqa/assets/{split}/query_{index:06d}"
-        )
-        choices = row["choices"]
-        answer_index = int(row["answer"])
-        answer = choices[answer_index]
-        answer_letter = chr(65 + answer_index)
-        question = row["question"] + "\nChoices: " + "; ".join(
-            f"{chr(65 + i)}. {choice}" for i, choice in enumerate(choices)
-        )
-        corpus.extend(
-            [
-                {
-                    "doc_id": f"scienceqa-{index}-lecture",
-                    "title": f"Science lesson {index + 1}",
-                    "text": row.get("lecture") or row.get("hint") or question,
-                },
-                {
-                    "doc_id": f"scienceqa-{index}-hint",
-                    "title": f"Question context {index + 1}",
-                    "text": row.get("hint") or "Use the pictured scientific evidence.",
-                },
-            ]
-        )
-        queries.append(
-            {
-                "query_id": f"scienceqa-smoke-{index}",
-                "question": question,
-                "gold_answers": [
-                    answer,
-                    answer_letter,
-                    f"{answer_letter}. {answer}",
-                ],
-                "image_path": str(image_path),
-                "metadata": {
-                    "subject": row.get("subject"),
-                    "topic": row.get("topic"),
-                    "split": split,
-                    "source_pid": row.get("pid"),
-                    "adapter_mode": "native_text_and_image",
-                },
-            }
-        )
-    _write_dataset("scienceqa", output_root, queries, corpus)
 
 
 def prepare_mrag_bench(source_root: Path, output_root: Path, n: int = 1) -> None:
@@ -396,7 +326,6 @@ def prepare_kvqa(source_root: Path, output_root: Path, n: int = 1) -> None:
 
 
 PREPARERS = {
-    "scienceqa": prepare_scienceqa,
     "mrag_bench": prepare_mrag_bench,
     "kvqa": prepare_kvqa,
 }

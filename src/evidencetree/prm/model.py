@@ -172,11 +172,18 @@ class HeuristicOverlapScorer:
     gives the MCTS meaningful guidance signal (prefer evidence-backed answers
     over blind ones) before any PRM exists, so the search framework can be
     exercised and demoed end-to-end. Replaced by the trained PRM in Stage 4+.
+
+    A partial trajectory (no answer yet) gets the neutral ``PARTIAL_PRIOR``:
+    answer coverage says nothing about an unfinished search, and scoring it 0
+    would make expansion prune every search child in favour of answers.
     """
 
     EVIDENCE_BONUS = 0.2
+    PARTIAL_PRIOR = 0.5
 
     def score(self, trajectory: Trajectory, **kwargs: Any) -> float:
+        if not trajectory.steps or trajectory.steps[-1].action_type != "answer":
+            return self.PARTIAL_PRIOR
         observations = " ".join(s.observation for s in trajectory.steps).lower()
         answer_tokens = [t for t in trajectory.final_answer.lower().split() if t]
         if not answer_tokens:

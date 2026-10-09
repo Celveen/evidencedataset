@@ -33,6 +33,9 @@ class TrajectoryScorer(Protocol):
 # --------------------------------------------------------------------------- #
 # Config & result containers
 # --------------------------------------------------------------------------- #
+EXPANSION_MODES = ("prior", "diverse")
+
+
 @dataclass
 class SearchConfig:
     rollouts: int = 10            # P
@@ -41,6 +44,17 @@ class SearchConfig:
     c_uct: float = 1.0
     early_stop_q: float = 0.9     # tau_stop
     seed: int = 0
+    # "prior": keep the top-k candidates by PRM prior (paper inference).
+    # "diverse": round-robin over action types by prior, so the kept children
+    # cover as many action types as were proposed (dataset construction, where
+    # no trained PRM exists yet and same-state contrasts are the product).
+    expansion: str = "prior"
+
+    def __post_init__(self) -> None:
+        if self.expansion not in EXPANSION_MODES:
+            raise ValueError(
+                f"search.expansion must be one of {EXPANSION_MODES}, got {self.expansion!r}."
+            )
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "SearchConfig":
@@ -49,7 +63,7 @@ class SearchConfig:
         search = dict(d.get("search", {}))
         kwargs: dict[str, Any] = {}
         for key in ("rollouts", "max_depth", "top_k_children", "c_uct",
-                    "early_stop_q", "seed"):
+                    "early_stop_q", "seed", "expansion"):
             if key in search:
                 kwargs[key] = search[key]
         return cls(**kwargs)
@@ -101,6 +115,22 @@ def state_to_trajectory(state: SearchState) -> Trajectory:
         final_answer=state.final_answer or "",
         image_path=state.image_path,
     )
+
+
+def _round_robin_by_type(children: list[MCTSNode]) -> list[MCTSNode]:
+    """Interleave prior-sorted children by action type: the best of each type
+    first (types in order of their best prior), then the second best, ..."""
+    buckets: dict[str, list[MCTSNode]] = {}
+    for ch in children:
+        buckets.setdefault(ch.action.action_type, []).append(ch)
+    out: list[MCTSNode] = []
+    depth = 0
+    while len(out) < len(children):
+        for bucket in buckets.values():
+            if depth < len(bucket):
+                out.append(bucket[depth])
+        depth += 1
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -219,6 +249,8 @@ class MCTSSearcher:
             prior = float(self.scorer.score(state_to_trajectory(child_state)))
             scored.append(MCTSNode(child_state, parent=node, action=action, prior=prior))
         scored.sort(key=lambda ch: ch.prior, reverse=True)
+        if self.cfg.expansion == "diverse":
+            scored = _round_robin_by_type(scored)
         kept = scored[: self.cfg.top_k_children]
         for child in kept:
             node.add_child(child)

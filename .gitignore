@@ -27,13 +27,18 @@ data/*
 *.ckpt
 checkpoints/
 models/
+/models
 outputs/
 wandb/
 logs/
 
-# Secrets
+# Secrets and machine-specific settings
 .env
 *.key
+DatasetConstruct/site.env
+
+# Paper under review — never publish it in this public repo
+docs/
 
 # Local backup copies / archives (never push these)
 *.zip

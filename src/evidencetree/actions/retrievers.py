@@ -1,12 +1,17 @@
 """Retriever wrappers.
 
-* ``BM25Retriever`` — lexical retrieval over the local corpus (``rank-bm25``).
+* ``BM25Retriever`` — lexical retrieval over the text side of the local corpus.
+  Okapi BM25 with rank-bm25's exact scoring, computed as one sparse
+  matrix-vector product (scipy + scikit-learn), so a million-chunk corpus
+  answers a query in milliseconds; falls back to ``rank-bm25`` when scipy /
+  scikit-learn are missing.
 * ``UnifiedClipRetriever`` — the retriever the method is built on: ONE CLIP
   space in which corpus text chunks and corpus images are independent
   retrieval units. ``search_text`` and ``search_image`` both return mixed
   top-k over all units, each hit tagged with ``result_modality``, with
   optional entity/doc dedupe before truncation.
-* ``HybridTextRetriever`` — rank-interleaves BM25 with unified text-query hits.
+* ``HybridTextRetriever`` — rank-interleaves BM25 with unified text-query hits
+  (the paper's hybrid index: BM25 over the text side + one dense CLIP index).
 
 All retrieval is OFFLINE over the benchmark's own corpus — no web API. Heavy
 dependencies (faiss / sentence-transformers / PIL) are imported lazily so the
@@ -15,13 +20,14 @@ mock smoke tests never need them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
-
-from rank_bm25 import BM25Okapi
 
 from ..eval.benchmarks import Document
 from ..utils.image_regions import safe_crop_box
@@ -29,6 +35,21 @@ from ..utils.image_regions import safe_crop_box
 # An encoder maps a list of inputs (str or PIL.Image) to a 2D array (n, dim).
 Encoder = Callable[[Sequence], "object"]
 _SENTENCE_MODEL_CACHE: dict[tuple[str, str | None], object] = {}
+_MODEL_LOCK = threading.Lock()  # sentence-transformers models are shared across threads
+
+
+def entity_key_of(doc: Document) -> str:
+    """Key used by ``dedupe='entity'``: entity id, else title, else doc id."""
+    return str(getattr(doc, "entity_id", None) or doc.title or doc.doc_id)
+
+
+def corpus_fingerprint(corpus: Sequence[Document]) -> str:
+    """Cheap identity of a corpus (size + ids), used to validate cached indexes."""
+    h = hashlib.sha256(str(len(corpus)).encode())
+    for doc in corpus:
+        h.update(doc.doc_id.encode())
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
 
 
 @dataclass
@@ -58,32 +79,176 @@ def _tokenize(text: str) -> list[str]:
 
 
 class BM25Retriever:
-    """Lexical BM25 retriever over an in-memory corpus."""
+    """Okapi BM25 over the text side of an in-memory corpus.
 
-    def __init__(self) -> None:
+    Documents without body text (image-only corpus entries) are not indexed:
+    BM25 is the text half of the hybrid index. Scoring reproduces
+    ``rank_bm25.BM25Okapi`` (k1=1.5, b=0.75, epsilon-floored idf; duplicate
+    query tokens count once per occurrence); ties keep corpus order.
+
+    ``dedupe_key`` ("entity" | "doc" | None) keeps only the best-ranked chunk
+    of each entity, as in :class:`UnifiedClipRetriever`.
+    """
+
+    def __init__(
+        self,
+        k1: float = 1.5,
+        b: float = 0.75,
+        epsilon: float = 0.25,
+        dedupe_key: str | None = None,
+    ) -> None:
+        if dedupe_key not in (None, "entity", "doc"):
+            raise ValueError(
+                f"dedupe_key must be 'entity', 'doc' or None, got {dedupe_key!r}."
+            )
+        self.k1, self.b, self.epsilon = k1, b, epsilon
+        self.dedupe_key = dedupe_key
         self._docs: list[Document] = []
-        self._bm25: BM25Okapi | None = None
+        self._keys: list[str] = []
+        self._matrix = None      # scipy CSC (n_docs, n_terms) of BM25 weights
+        self._vocab: dict[str, int] | None = None
+        self._fallback = None    # rank_bm25.BM25Okapi when scipy is unavailable
 
     def build(self, corpus: Sequence[Document]) -> "BM25Retriever":
         """Index a corpus. Must be called before :meth:`search`."""
-        if not corpus:
+        docs = [d for d in corpus if (d.text or "").strip()]
+        if not docs:
             raise ValueError("Cannot build BM25 index from an empty corpus.")
-        self._docs = list(corpus)
-        tokenized = [_tokenize(f"{d.title} {d.text}") for d in self._docs]
-        self._bm25 = BM25Okapi(tokenized)
+        self._set_docs(docs)
+        texts = [f"{d.title} {d.text}" for d in docs]
+        try:
+            import numpy as np
+            from sklearn.feature_extraction.text import CountVectorizer
+        except ImportError:
+            from rank_bm25 import BM25Okapi
+
+            self._fallback = BM25Okapi([_tokenize(t) for t in texts])
+            return self
+        vectorizer = CountVectorizer(
+            lowercase=True, token_pattern=r"[a-z0-9]+", dtype=np.float32
+        )
+        tf = vectorizer.fit_transform(texts).tocsr()   # (n_docs, n_terms)
+        self._vocab = {t: int(i) for t, i in vectorizer.vocabulary_.items()}
+        self._matrix = self._weights(tf)
         return self
+
+    def _set_docs(self, docs: Sequence[Document]) -> None:
+        self._docs = list(docs)
+        self._keys = [
+            entity_key_of(d) if self.dedupe_key == "entity" else d.doc_id
+            for d in self._docs
+        ]
+
+    def _weights(self, tf):
+        """tf (CSR counts) -> CSC matrix of per-(doc, term) BM25 contributions."""
+        import numpy as np
+
+        n_docs = tf.shape[0]
+        doc_len = np.asarray(tf.sum(axis=1)).ravel()
+        avgdl = float(doc_len.mean()) if n_docs else 0.0
+        df = np.bincount(tf.indices, minlength=tf.shape[1]).astype("float64")
+        idf = np.log(n_docs - df + 0.5) - np.log(df + 0.5)
+        eps = self.epsilon * (idf.sum() / len(idf)) if len(idf) else 0.0
+        idf[idf < 0] = eps
+        rows = np.repeat(np.arange(n_docs), np.diff(tf.indptr))
+        norm = self.k1 * (1 - self.b + self.b * doc_len[rows] / max(avgdl, 1e-9))
+        data = tf.data.astype("float64")
+        tf.data = (idf[tf.indices] * data * (self.k1 + 1) / (data + norm)).astype("float32")
+        return tf.tocsc()
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievalHit]:
         """Return the top-k documents for a text query."""
-        if self._bm25 is None:
+        if self._matrix is None and self._fallback is None:
             raise RuntimeError("BM25Retriever.search called before build().")
-        scores = self._bm25.get_scores(_tokenize(query))
-        ranked = sorted(
-            range(len(self._docs)), key=lambda i: scores[i], reverse=True
-        )[:top_k]
-        return [
-            _hit(self._docs[i], float(scores[i]), modality="text") for i in ranked
-        ]
+        import numpy as np
+
+        top_k = max(1, top_k)
+        if self._fallback is not None:
+            scores = np.asarray(self._fallback.get_scores(_tokenize(query)))
+        else:
+            counts = Counter(t for t in _tokenize(query) if t in self._vocab)
+            scores = np.zeros(len(self._docs), dtype="float64")
+            for term, c in counts.items():
+                col = self._matrix.getcol(self._vocab[term])
+                scores[col.indices] += c * col.data
+        return self._rank(scores, top_k)
+
+    def _rank(self, scores, top_k: int) -> list[RetrievalHit]:
+        import numpy as np
+
+        n = len(scores)
+        want = top_k if not self.dedupe_key else top_k * 20
+        while True:
+            fetch = min(n, want)
+            cand = np.arange(n)
+            if fetch < n:
+                part = np.argpartition(-scores, fetch - 1)[:fetch]
+                kth = scores[part].min()
+                if kth > 0:
+                    # Every doc tied with the boundary joins, so ties keep corpus order.
+                    cand = np.nonzero(scores >= kth)[0]
+            order = cand[np.argsort(-scores[cand], kind="stable")]
+            hits: list[RetrievalHit] = []
+            seen: set[str] = set()
+            for i in order:
+                if self.dedupe_key:
+                    key = self._keys[i]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                hits.append(_hit(self._docs[i], float(scores[i]), modality="text"))
+                if len(hits) >= top_k:
+                    return hits
+            if fetch >= n:
+                return hits
+            want *= 4
+
+    # ------------------------------------------------------------------ #
+    def save(self, dir_path: str | Path, fingerprint: str) -> Path:
+        """Persist the sparse index (vocab + weights + indexed doc ids)."""
+        if self._matrix is None:
+            raise RuntimeError("Only the scipy-backed index can be saved.")
+        from scipy import sparse
+
+        dir_path = Path(dir_path)
+        dir_path.mkdir(parents=True, exist_ok=True)
+        sparse.save_npz(dir_path / "weights.npz", self._matrix)
+        (dir_path / "meta.json").write_text(json.dumps({
+            "fingerprint": fingerprint,
+            "doc_ids": [d.doc_id for d in self._docs],
+            "vocab": self._vocab,
+            "k1": self.k1, "b": self.b, "epsilon": self.epsilon,
+        }), encoding="utf-8")
+        return dir_path
+
+    @classmethod
+    def load(
+        cls,
+        dir_path: str | Path,
+        corpus: Sequence[Document],
+        fingerprint: str,
+        dedupe_key: str | None = None,
+    ) -> "BM25Retriever | None":
+        """Load a saved index; None when missing or built for another corpus."""
+        dir_path = Path(dir_path)
+        meta_path = dir_path / "meta.json"
+        if not meta_path.exists() or not (dir_path / "weights.npz").exists():
+            return None
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if meta.get("fingerprint") != fingerprint:
+            return None
+        from scipy import sparse
+
+        by_id = {d.doc_id: d for d in corpus}
+        try:
+            docs = [by_id[i] for i in meta["doc_ids"]]
+        except KeyError:
+            return None
+        inst = cls(k1=meta["k1"], b=meta["b"], epsilon=meta["epsilon"], dedupe_key=dedupe_key)
+        inst._set_docs(docs)
+        inst._vocab = meta["vocab"]
+        inst._matrix = sparse.load_npz(dir_path / "weights.npz").tocsc()
+        return inst
 
     def __len__(self) -> int:
         return len(self._docs)
@@ -176,10 +341,8 @@ class UnifiedClipRetriever:
         self._n_docs = len(corpus)
         units: list[_RetrievalUnit] = []
         for doc in corpus:
-            entity = str(
-                getattr(doc, "entity_id", None) or doc.title or doc.doc_id
-            )
-            if f"{doc.title} {doc.text}".strip():
+            entity = entity_key_of(doc)
+            if (doc.text or "").strip():  # image-only entries get no title-only text unit
                 units.append(_RetrievalUnit(
                     doc_id=doc.doc_id, modality="text", text=doc.text,
                     title=doc.title, image_path=None, entity_key=entity,
@@ -340,28 +503,33 @@ class UnifiedClipRetriever:
     def _search_vec(self, qv, top_k: int) -> list[RetrievalHit]:
         n = len(self._units)
         top_k = max(1, top_k)
-        # Over-fetch when deduping so unique keys can still fill top_k.
-        fetch = n if self.dedupe_key else min(n, top_k)
-        scores, ids = self._raw_search(qv, fetch)
-        hits: list[RetrievalHit] = []
-        seen_keys: set[str] = set()
-        for score, i in zip(scores, ids):
-            if i < 0:
-                continue
-            u = self._units[int(i)]
-            if self.dedupe_key:
-                key = u.entity_key if self.dedupe_key == "entity" else u.doc_id
-                if key in seen_keys:
+        # Over-fetch when deduping so unique keys can still fill top_k; grow
+        # the window only when duplicates eat it (a full sort of a million
+        # units per query would dominate search time).
+        fetch = min(n, top_k * 20 if self.dedupe_key else top_k)
+        while True:
+            scores, ids = self._raw_search(qv, fetch)
+            hits: list[RetrievalHit] = []
+            seen_keys: set[str] = set()
+            for score, i in zip(scores, ids):
+                if i < 0:
                     continue
-                seen_keys.add(key)
-            hits.append(RetrievalHit(
-                doc_id=u.doc_id, text=u.text, score=float(score),
-                title=u.title, image_path=u.image_path,
-                result_modality=u.modality,
-            ))
-            if len(hits) >= top_k:
-                break
-        return hits
+                u = self._units[int(i)]
+                if self.dedupe_key:
+                    key = u.entity_key if self.dedupe_key == "entity" else u.doc_id
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                hits.append(RetrievalHit(
+                    doc_id=u.doc_id, text=u.text, score=float(score),
+                    title=u.title, image_path=u.image_path,
+                    result_modality=u.modality,
+                ))
+                if len(hits) >= top_k:
+                    return hits
+            if fetch >= n:
+                return hits
+            fetch = min(n, fetch * 4)
 
     def _raw_search(self, qv, fetch: int):
         import numpy as np
@@ -395,22 +563,17 @@ class UnifiedClipRetriever:
         if encoder is not None:
             vecs = np.asarray(encoder(items), dtype="float32")
         else:
-            vecs = self._st_model().encode(
-                list(items), convert_to_numpy=True, show_progress_bar=False
-            ).astype("float32")
+            model = self._st_model()
+            with _MODEL_LOCK:  # step 1 searches from several threads at once
+                vecs = model.encode(
+                    list(items), convert_to_numpy=True, show_progress_bar=False
+                ).astype("float32")
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
         return vecs / np.clip(norms, 1e-12, None)
 
     def _st_model(self):
         if self._model is None:
-            from sentence_transformers import SentenceTransformer
-
-            key = (self.model_name, self.device)
-            if key not in _SENTENCE_MODEL_CACHE:
-                _SENTENCE_MODEL_CACHE[key] = SentenceTransformer(
-                    self.model_name, device=self.device
-                )
-            self._model = _SENTENCE_MODEL_CACHE[key]
+            self._model = shared_sentence_model(self.model_name, self.device)
         return self._model
 
     @staticmethod
@@ -421,22 +584,46 @@ class UnifiedClipRetriever:
         return Image.open(path).convert("RGB")
 
 
+def shared_sentence_model(model_name: str, device: str | None = None):
+    """One sentence-transformers model per (name, device), shared process-wide
+    by the retriever and the grounding verifier."""
+    key = (model_name, device)
+    with _MODEL_LOCK:
+        if key not in _SENTENCE_MODEL_CACHE:
+            from sentence_transformers import SentenceTransformer
+
+            _SENTENCE_MODEL_CACHE[key] = SentenceTransformer(model_name, device=device)
+        return _SENTENCE_MODEL_CACHE[key]
+
+
 class HybridTextRetriever:
     """Rank-interleave BM25 lexical hits with unified CLIP text-query hits.
 
     BM25 scores and CLIP cosines are not on a comparable scale, so the merge is
-    rank-based: alternate lists (lexical first), dropping duplicate units.
+    rank-based: alternate lists (lexical first), dropping duplicate units and —
+    when ``dedupe_key`` is set — later hits of an entity already returned.
     """
 
-    def __init__(self, bm25: BM25Retriever, unified: UnifiedClipRetriever) -> None:
+    def __init__(
+        self,
+        bm25: BM25Retriever,
+        unified: UnifiedClipRetriever,
+        dedupe_key: str | None = None,
+    ) -> None:
         self.bm25 = bm25
         self.unified = unified
+        self.dedupe_key = dedupe_key
+        self._entity = {}
+        if dedupe_key == "entity":
+            self._entity = {d.doc_id: entity_key_of(d) for d in bm25._docs}
+            self._entity.update({u.doc_id: u.entity_key for u in unified._units})
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievalHit]:
         lex = self.bm25.search(query, top_k=top_k)
         sem = self.unified.search_text(query, top_k=top_k)
         merged: list[RetrievalHit] = []
         seen: set[tuple[str, str | None]] = set()
+        seen_groups: set[str] = set()
         for pair in zip(lex + [None] * len(sem), sem + [None] * len(lex)):
             for hit in pair:
                 if hit is None:
@@ -444,6 +631,15 @@ class HybridTextRetriever:
                 key = (hit.doc_id, hit.result_modality)
                 if key in seen or (hit.doc_id, None) in seen:
                     continue
+                group = None
+                if self.dedupe_key == "entity":
+                    group = self._entity.get(hit.doc_id, hit.doc_id)
+                elif self.dedupe_key == "doc":
+                    group = hit.doc_id
+                if group is not None:
+                    if group in seen_groups:
+                        continue
+                    seen_groups.add(group)
                 seen.add(key)
                 merged.append(hit)
                 if len(merged) >= top_k:

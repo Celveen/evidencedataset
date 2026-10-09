@@ -1,7 +1,16 @@
-"""Answer-correctness metrics (SQuAD-style EM / F1).
+"""Answer-correctness metrics (SQuAD-style EM / F1, benchmark outcome rules).
 
-Used in Stage 0.1 to compute *outcome correctness* of a trajectory's final
-answer against the gold answer(s), and reused by Stage 7 evaluation.
+Used to compute the *outcome correctness* of a trajectory's final answer
+against the gold answer(s) — during dataset construction (step 1) and at
+evaluation time. Every rule is deterministic; no LLM judge is involved.
+
+:func:`outcome_match` dispatches to each benchmark's official rule:
+
+* InfoSeek  — relaxed accuracy: numeric range for VALUE questions, normalized
+  exact match over the gold aliases for STRING questions.
+* ScienceQA — multiple choice: the prediction must resolve to the gold option,
+  whether it names the option letter, the option text, or both.
+* GQA (and anything else) — normalized exact match.
 """
 
 from __future__ import annotations
@@ -10,10 +19,7 @@ import ast
 import re
 import string
 from collections import Counter
-from typing import Any, Iterable, Sequence
-
-
-_NUMBER_RE = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?")
+from typing import Any, Iterable, Mapping, Sequence
 
 
 def normalize_answer(text: str) -> str:
@@ -72,10 +78,6 @@ def _numeric_range_match(prediction: str, golds: Sequence[str]) -> bool:
         if any(lo <= value <= hi for value in pred_numbers):
             return True
     return False
-
-
-def _extract_numbers(text: str) -> list[float]:
-    return [float(match.replace(",", "")) for match in _NUMBER_RE.findall(text)]
 
 
 def _parse_mapping(value: Any) -> Any:
@@ -162,6 +164,109 @@ def infoseek_accuracy(prediction: str, ground_truths: str | Sequence) -> float:
         lo, hi = rng
         return float(any(lo <= n <= hi for n in _extract_numbers(prediction)))
     return exact_match(prediction, golds)
+
+
+# --------------------------------------------------------------------------- #
+# Multiple choice (ScienceQA)
+# --------------------------------------------------------------------------- #
+_LEADING_LETTER_RE = re.compile(r"^\s*(?:option\s+)?\(?([A-Za-z])\)?(?:[.):,]|\s|$)")
+_ANSWER_PREFIX_RE = re.compile(
+    r"^\s*(?:the\s+)?(?:final\s+)?(?:correct\s+)?(?:answer|option|choice)\s*(?:is|:)?\s*",
+    re.IGNORECASE,
+)
+
+
+def parse_choice(prediction: str, choices: Sequence[str]) -> int | None:
+    """Resolve a free-form prediction to an option index, or None.
+
+    Accepted forms: the option text ("mammal"), the option letter ("B",
+    "(B)", "B."), both ("B. mammal"), or a sentence naming exactly one option
+    ("the answer is mammal"). A letter that contradicts the option text that
+    follows it, or a sentence naming several options, is ambiguous -> None.
+    """
+    if not choices:
+        return None
+    text = _ANSWER_PREFIX_RE.sub("", str(prediction).strip())
+    norm_choices = [normalize_answer(str(c)) for c in choices]
+    norm_pred = normalize_answer(text)
+    if norm_pred:
+        exact = [i for i, c in enumerate(norm_choices) if c == norm_pred]
+        if len(exact) == 1:
+            return exact[0]
+
+    m = _LEADING_LETTER_RE.match(text)
+    if m:
+        index = ord(m.group(1).upper()) - ord("A")
+        if 0 <= index < len(choices):
+            rest = normalize_answer(text[m.end():])
+            if not rest or rest == norm_choices[index]:
+                return index
+            named = [i for i, c in enumerate(norm_choices) if c and c == rest]
+            if not named:
+                return index  # trailing explanation that names no other option
+            return None  # "B. <text of another option>" is contradictory
+
+    mentioned = [
+        i for i, c in enumerate(norm_choices)
+        if c and re.search(rf"(?<!\w){re.escape(c)}(?!\w)", norm_pred)
+    ]
+    # Drop options that are substrings of a longer mentioned option.
+    mentioned = [
+        i for i in mentioned
+        if not any(j != i and norm_choices[i] in norm_choices[j] for j in mentioned)
+    ]
+    return mentioned[0] if len(mentioned) == 1 else None
+
+
+def multiple_choice_match(
+    prediction: str, choices: Sequence[str], answer_index: int
+) -> float:
+    """1.0 if the prediction resolves to the gold option, else 0.0."""
+    return float(parse_choice(prediction, choices) == int(answer_index))
+
+
+# --------------------------------------------------------------------------- #
+# Benchmark dispatch
+# --------------------------------------------------------------------------- #
+def _benchmark_key(benchmark: str | None) -> str:
+    return str(benchmark or "").lower().replace("-", "").replace("_", "")
+
+
+def outcome_metric_name(benchmark: str | None) -> str:
+    """Name of the rule :func:`outcome_match` applies (recorded in provenance)."""
+    key = _benchmark_key(benchmark)
+    if key == "infoseek":
+        return "infoseek_relaxed"
+    if key == "scienceqa":
+        return "scienceqa_multiple_choice"
+    return "normalized_exact_match"
+
+
+def outcome_match(
+    prediction: str,
+    gold_answers: str | Sequence[Any],
+    benchmark: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> float:
+    """Outcome correctness under the benchmark's official rule."""
+    key = _benchmark_key(benchmark)
+    meta = metadata or {}
+    if key == "scienceqa" and meta.get("choices") and meta.get("answer_index") is not None:
+        return multiple_choice_match(prediction, meta["choices"], int(meta["answer_index"]))
+    if key == "infoseek":
+        return infoseek_accuracy(prediction, gold_answers)
+    return exact_match(prediction, gold_answers)
+
+
+def answer_type(
+    gold_answers: str | Sequence[Any], metadata: Mapping[str, Any] | None = None
+) -> str:
+    """``choice`` (multiple choice), ``value`` (numeric range) or ``string``."""
+    if (metadata or {}).get("choices"):
+        return "choice"
+    if _numeric_range_gold(_as_list(gold_answers)) is not None:
+        return "value"
+    return "string"
 
 
 def aggregate(

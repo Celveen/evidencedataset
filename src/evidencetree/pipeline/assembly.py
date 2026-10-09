@@ -14,15 +14,21 @@ Config keys consumed (superset of the two former call sites):
     retriever.top_k / retriever.image_search / retriever.clip_model
     retriever.image.{enabled,model_name,device,batch_size,top_k,index_dir}
     retriever.image_top_k  (legacy inference alias of retriever.image.top_k)
+    retriever.cache_size   memoized retrieval calls (default 50000; 0 = off)
+    retriever.bm25_index_dir  on-disk BM25 cache (default <data_dir>/bm25_index)
+    retriever.mock_encoders   mock runs over an image-bearing world use the
+                           deterministic stand-in CLIP encoders (default true)
     policy | generation    proposer / answer-drafting backend
     action_gate.{enabled,mode,max_actions}
     prm.scorer             overlap | visualprm (default: overlap when mock,
                            else visualprm) + prm.model_name/device
     mcts | search          SearchConfig block (both spellings accepted)
 
-Mock mode without injected encoders falls back to BM25-only retrieval (no
-model downloads); injecting deterministic ``text_encoder``/``image_encoder``
-keeps the full unified-CLIP mechanics runnable offline (tests, demos).
+Mock mode never downloads a model. When the mock queries carry images it
+injects the deterministic encoders of ``evidencetree.utils.mock_encoders`` so
+the full unified-CLIP mechanics (image_search, cross-modal hits) run offline;
+a text-only mock world, or ``retriever.mock_encoders: false``, falls back to
+BM25-only retrieval. Tests and demos may inject their own encoders.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from evidencetree.actions import ActionExecutor, BM25Retriever, HybridTextRetriever
-from evidencetree.actions.retrievers import Encoder, UnifiedClipRetriever
+from evidencetree.actions.retrievers import Encoder, UnifiedClipRetriever, corpus_fingerprint
 from evidencetree.eval.benchmarks import Document, Query
 from evidencetree.generation import build_generator
 from evidencetree.mcts import HeuristicProposer, LLMProposer, MCTSSearcher, SearchConfig
@@ -69,15 +75,24 @@ def build_search_stack(
             f"retriever.backend must be one of {sorted(_TEXT_BACKENDS)}, "
             f"got {backend!r}."
         )
+    has_query_images = any(q.image_path for q in queries)
     injected = text_encoder is not None or image_encoder is not None
+    if (
+        mock and not injected and has_query_images
+        and bool(retriever_cfg.get("mock_encoders", True))
+    ):
+        from evidencetree.utils.mock_encoders import mock_image_encoder, mock_text_encoder
+
+        text_encoder, image_encoder = mock_text_encoder, mock_image_encoder
+        injected = True
+        log.info("Mock mode: deterministic stand-in CLIP encoders (no downloads).")
     if mock and not injected and backend != "bm25":
         log.info(
-            "Mock mode without injected encoders: retriever.backend %s -> bm25 "
+            "Mock mode without encoders: retriever.backend %s -> bm25 "
             "(no CLIP model downloads in smoke runs).", backend,
         )
         backend = "bm25"
 
-    has_query_images = any(q.image_path for q in queries)
     image_requested = bool(
         retriever_cfg.get("image_search", image_cfg.get("enabled", False))
     )
@@ -95,11 +110,15 @@ def build_search_stack(
             text_encoder=text_encoder, image_encoder=image_encoder,
         )
 
-    bm25 = BM25Retriever().build(corpus) if backend in ("bm25", "hybrid") else None
+    dedupe = _dedupe_key(retriever_cfg)
+    bm25 = (
+        _build_or_load_bm25(cfg, corpus, retriever_cfg, dedupe, cache=not (mock or injected))
+        if backend in ("bm25", "hybrid") else None
+    )
     if backend == "unified":
         text_retriever = unified
     elif backend == "hybrid":
-        text_retriever = HybridTextRetriever(bm25, unified)
+        text_retriever = HybridTextRetriever(bm25, unified, dedupe_key=dedupe)
     else:
         text_retriever = bm25
 
@@ -124,6 +143,7 @@ def build_search_stack(
         image_top_k=int(
             image_cfg.get("top_k", retriever_cfg.get("image_top_k", 3))
         ),
+        cache_size=int(retriever_cfg.get("cache_size", 50_000)),
     )
 
     policy_cfg = dict(cfg.get("policy") or cfg.get("generation") or {})
@@ -213,6 +233,36 @@ def _dedupe_key(retriever_cfg: dict[str, Any]) -> str | None:
     if raw in ("entity", "doc"):
         return raw
     raise ValueError(f"retriever.dedupe must be entity|doc|none, got {raw!r}.")
+
+
+def _build_or_load_bm25(
+    cfg: dict[str, Any],
+    corpus: Sequence[Document],
+    retriever_cfg: dict[str, Any],
+    dedupe: str | None,
+    cache: bool,
+) -> BM25Retriever:
+    """Build the BM25 index, reusing the on-disk copy when the corpus matches.
+
+    Tokenizing a million chunks takes minutes; every resumed step-1 run would
+    otherwise pay it again.
+    """
+    if not cache:
+        return BM25Retriever(dedupe_key=dedupe).build(corpus)
+    data_dir = Path(cfg.get("data", {}).get("data_dir") or ".")
+    index_dir = Path(retriever_cfg.get("bm25_index_dir") or data_dir / "bm25_index")
+    fingerprint = corpus_fingerprint(corpus)
+    loaded = BM25Retriever.load(index_dir, corpus, fingerprint, dedupe_key=dedupe)
+    if loaded is not None:
+        log.info("Loaded cached BM25 index: %s (%d docs)", index_dir, len(loaded))
+        return loaded
+    bm25 = BM25Retriever(dedupe_key=dedupe).build(corpus)
+    try:
+        bm25.save(index_dir, fingerprint)
+        log.info("Built and cached BM25 index: %s (%d docs)", index_dir, len(bm25))
+    except RuntimeError:  # rank-bm25 fallback cannot be saved; rebuild next time
+        pass
+    return bm25
 
 
 def _build_or_load_unified(

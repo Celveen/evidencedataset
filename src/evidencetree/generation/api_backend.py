@@ -9,7 +9,11 @@ back to ``ANTHROPIC_API_KEY`` / ``OPENAI_API_KEY`` per provider.
 
 ``GenerationConfig.extra`` knobs:
     base_url    — OpenAI-compatible endpoint (e.g. DashScope for Qwen-VL:
-                  https://dashscope.aliyuncs.com/compatible-mode/v1)
+                  https://dashscope.aliyuncs.com/compatible-mode/v1), or a
+                  LIST of endpoints — e.g. one local vLLM server per GPU —
+                  which requests then rotate over (openai provider only).
+                  With provider ``anthropic`` it points the client at any
+                  Anthropic-protocol endpoint (one URL).
     api_key_env — env var holding the key (e.g. DASHSCOPE_API_KEY)
 
 Multimodal: pass ``image_path=...`` to :meth:`generate` and the image is
@@ -20,8 +24,10 @@ Leave it None for text-only models.
 from __future__ import annotations
 
 import base64
+import itertools
 import mimetypes
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -46,13 +52,31 @@ class APIGenerator(Generator):
         self.model = config.model or _DEFAULT_MODELS.get(self.provider)
         if self.model is None:
             raise ValueError(f"No default model for provider {self.provider!r}.")
-        self.base_url = config.extra.get("base_url")
+        raw_url = config.extra.get("base_url")
+        self.base_urls: list[str | None] = (
+            [str(u) for u in raw_url] if isinstance(raw_url, (list, tuple)) else [raw_url]
+        )
+        if not self.base_urls:
+            raise ValueError("base_url list is empty.")
+        if len(self.base_urls) > 1 and self.provider != "openai":
+            raise ValueError("A list of base_url endpoints needs provider 'openai'.")
+        self.base_url = self.base_urls[0]
         self.api_key_env = (
             config.extra.get("api_key_env") or _DEFAULT_KEY_ENVS.get(self.provider, "")
         )
-        self._client = self._make_client()
+        self._clients = [self._make_client(url) for url in self.base_urls]
+        self._client = self._clients[0]
+        self._rotation = itertools.cycle(range(len(self._clients)))
+        self._rotation_lock = threading.Lock()
 
-    def _make_client(self):
+    def _next_client(self):
+        """Round-robin over the configured endpoints (thread-safe)."""
+        if len(self._clients) == 1:
+            return self._clients[0]
+        with self._rotation_lock:
+            return self._clients[next(self._rotation)]
+
+    def _make_client(self, base_url: str | None = None):
         api_key = os.environ.get(self.api_key_env)
         if not api_key:
             raise EnvironmentError(
@@ -64,15 +88,18 @@ class APIGenerator(Generator):
         if self.provider == "anthropic":
             import anthropic
 
+            # base_url lets Anthropic-protocol endpoints of other vendors
+            # (e.g. Moonshot's Kimi) stand in for api.anthropic.com.
+            kwargs = {"base_url": base_url} if base_url else {}
             return anthropic.Anthropic(
-                api_key=api_key, timeout=timeout, max_retries=max_retries
+                api_key=api_key, timeout=timeout, max_retries=max_retries, **kwargs
             )
         if self.provider == "openai":
             import httpx
             import openai
 
             kwargs: dict[str, Any] = {}
-            if _is_local_base_url(self.base_url):
+            if _is_local_base_url(base_url):
                 # Local OpenAI-compatible servers such as Qwen run on
                 # 127.0.0.1. Environment proxies can otherwise intercept the
                 # request and return a misleading 502.
@@ -81,7 +108,7 @@ class APIGenerator(Generator):
                     timeout=timeout,
                 )
             return openai.OpenAI(
-                api_key=api_key, base_url=self.base_url,
+                api_key=api_key, base_url=base_url,
                 timeout=timeout, max_retries=max_retries,
                 **kwargs,
             )
@@ -142,7 +169,7 @@ class APIGenerator(Generator):
         else:
             user_content = user_text
         seed = self.config.extra.get("seed")
-        resp = self._client.chat.completions.create(
+        resp = self._next_client().chat.completions.create(
             model=self.model,
             max_tokens=self.config.max_new_tokens,
             temperature=self.config.temperature,

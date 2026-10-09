@@ -8,6 +8,7 @@ rank-bm25>=0.2.2
 tqdm>=4.65
 pandas>=2.0
 pillow>=10.0          # image handling (demo, image-bearing tests)
+pyarrow>=14           # parquet sources (ScienceQA, GQA data preparation)
 datasets>=2.14        # loading InfoSeek / benchmark data (pure-python loaders)
 anthropic>=0.39       # optional API generation backend (Claude)
 openai>=1.40          # optional API generation backend (GPT-4o)

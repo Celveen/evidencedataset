@@ -1,76 +1,70 @@
-# ETBench-Open construction — remaining work
+# ETBench-Open construction — status and remaining work
 
-Working branch for finishing the dataset-construction side of the repository. This file
-records where the pipeline stands and what is still missing before ETBench-Open can be
-released as specified in [SCHEMA.md](SCHEMA.md). Tick items off here as they land.
+Tracks the build of ETBench-Open on the three benchmarks of the paper. The design
+is in [DESIGN.md](DESIGN.md); tick items off here as they land.
 
-## Current state (baseline: `b4d979a`)
+## Current state (pipeline v2)
 
-What works today:
+The six-step pipeline runs end to end offline: `python DatasetConstruct/run_pipeline.py
+--mock` builds a CONFORMANT mock split from a synthetic image-bearing world (140 queries
+→ 1,227 trajectories → 4,036 step records → 2,747 unique nodes → 420 sampled, with
+text_search, image_search and answer nodes, support judging, rationales, pairs and
+stats). The unit tests cover every component, including the data preparation
+scripts and the InfoSeek fetch kit with the network replaced by local fakes. No real
+data has been generated yet: the construction server holds no data or models.
 
-- **Steps 1–4 run end to end.** `python DatasetConstruct/run_pipeline.py --mock --force`
-  produces 449 trajectories → 1147 step samples → 1132 kept (train 1089 / val 43) and
-  `validate_dataset.py` reports the output CONFORMANT.
-- **Test suite is green** (`pytest`, 96 tests, base requirements only).
-- **Data preparation** exists for InfoSeek (queries, Wikipedia corpus, query and corpus
-  images), GQA (30k balanced subset), and ScienceQA / MRAG-Bench / KVQA.
-- **Validator** enforces the SCHEMA §2 invariants, including split purity and the
-  `--require-provenance` release mode.
+Closed from the v1 audit:
 
-Gaps found while auditing against SCHEMA.md and the top-level README:
+| # | Gap | Resolution |
+| - | --- | --- |
+| G1 | `gen_provenance` never written | step 6 attaches it; the validator runs in release mode |
+| G2 | no `test` split | decided: the benchmark evaluation sets are the held-out test sets; `quality.test_fraction` exists if one is wanted |
+| G3 | `stats.json` incomplete | step 6 writes the SCHEMA §4 report |
+| G5 | no DPO pairs | step 6 mines same-state pairs per split (6 types) |
+| G6 | length rule counted post-filter survivors | step 3 filters on the full trajectory length (`traj_len`) |
+| G7 | mock never exercised image_search | mock world with images + deterministic stand-in CLIP encoders |
+| G8 | no per-benchmark configs / MC outcome rule | `configs/{infoseek,scienceqa,gqa}.yaml`; `metrics.outcome_match` |
 
-| # | Gap | Where | Spec reference |
-| - | --- | --- | --- |
-| G1 | `gen_provenance` is never written; release validation (`--require-provenance`) cannot pass | step 4 | SCHEMA §1.1, §1.4, §2.11 |
-| G2 | Only `train` / `val` are produced; no `test` split | step 4 | SCHEMA §1.1, §3 |
-| G3 | `stats.json` lacks the published statistics: histograms of `score` / `local_grounding` / `outcome_credit`, mean trajectory length, rationale QC pass rate, outcome positive rate **per answer type** (string vs. value) | step 4 | SCHEMA §4 |
-| G4 | No release bundle: `corpus.jsonl` export, `image_urls.jsonl` + download script, `manifest.json` (line counts + sha256 + version), `DATASET_CARD.md`, `load_dataset.py` | new `export_release.py` | SCHEMA §3, §6 |
-| G5 | No DPO preference-pair mining, although the README says the repository provides "the preference pairs" (action-typed, same-state contrastive pairs from the search trees; `unsupported_correct` answers as negatives) | new step / exporter | README §3, SCHEMA §1.1 |
-| G6 | Step 4's trajectory-length rule counts samples that *survived step 3*, not the complete trajectory; a step-3 drop can shorten a trajectory below `min_steps` and wrongly discard it | step 4 | SCHEMA §2.10 |
-| G7 | Mock runs never exercise `image_search` (no injected encoders), so the mixed-modality path of steps 2–4 has no end-to-end smoke coverage | mock benchmark / tests | README "Quickstart" |
-| G8 | Non-InfoSeek benchmarks (GQA, ScienceQA, …) have data preparation but no documented pilot run or per-benchmark config; ScienceQA's multiple-choice gold answers need an outcome rule that accepts the option letter or the option text | configs, `eval/metrics.py` | README "Reproducing" |
+Also new in v2: evaluation holdout with committed id lists and a loader guard; 60K-entity
+InfoSeek corpus from Wiki6M with hard negatives; hybrid retrieval with a fast sparse BM25;
+windowed CLIP grounding with raw cosines stored; node collapse; budgeted sibling-group
+sampling; support judge on sampled correct answers only, with titles and image evidence;
+marginal-gain field; preflight and audit tools; vLLM multi-server policy serving.
 
-## Plan
+## Remaining work
 
-Ordered so each stage leaves the pipeline runnable and the validator green.
+### Stage A — Data and environment
+- [ ] Server environment: venv, `pip install -r requirements/server.txt`, `pip install -e .`
+- [ ] `data_prep/download_assets.sh` — Qwen2.5-VL-7B, CLIP ViT-B/32, GQA, ScienceQA
+- [ ] InfoSeek fetch kit on a machine with internet → copy → `import_infoseek_kit.py`
+- [ ] GQA `sceneGraphs.zip` via the kit → `prepare_gqa.py`
+- [ ] `prepare_scienceqa.py`
+- [ ] Commit `DatasetConstruct/splits/<benchmark>/` (the evaluation holdouts)
+- [ ] New judge / rationale models and API keys in `configs/base.yaml` and `.env`
 
-### Stage 1 — Close the step-4 spec gaps
-- [ ] G6: take trajectory length from the step-1 trajectories file, not from step-3 survivors.
-- [ ] G2: deterministic query-level three-way split (`quality.val_fraction`, new
-      `quality.test_fraction`), still hashed on `query_id`.
-- [ ] G3: extend `stats.json` to the SCHEMA §4 list; per-answer-type positive rate uses
-      the same string/value distinction as `metrics.exact_match`.
-- [ ] G1: attach `gen_provenance` in step 4 from the resolved config (policy model and
-      deployment, retriever, rationale model, MCTS block, outcome metric, seed,
-      `git rev-parse HEAD`, `dataset_version`).
-- [ ] Tests covering each of the above on the mock pipeline.
+### Stage B — Pilot and calibration (per benchmark, 100 seeds)
+- [ ] `preflight.py --check-apis` passes
+- [ ] Pilot run in a separate output tree; read `stats.json`
+- [ ] Refit grounding bands from `grounding_detail.raw_cos` (DESIGN §7); rerun steps 2–6
+- [ ] Audit sheet of 100 queries read and signed off
+- [ ] Measure step-1 throughput and API tokens; confirm the sampling budget
 
-### Stage 2 — Preference pairs for ET-PRM DPO
-- [ ] G5: mine same-state contrastive pairs from step-2/3 samples — siblings sharing
-      `state.actions_before` with a score margin above a configurable threshold, grouped by
-      action type; `unsupported_correct` answer steps paired against supported ones.
-- [ ] Write `pairs_{train,val,test}.jsonl` inside the existing query-disjoint splits and
-      document the record format in SCHEMA.md.
+### Stage C — Full builds
+- [ ] InfoSeek (20K seeds)
+- [ ] ScienceQA (~17K seeds)
+- [ ] GQA (20K seeds)
+- [ ] Audit of 100 queries per full build
 
-### Stage 3 — Release bundle
-- [ ] G4: `DatasetConstruct/export_release.py` assembling the SCHEMA §3 layout, with
-      `manifest.json` checksums and a `DATASET_CARD.md` pre-filled from `stats.json` and
-      `gen_provenance`.
-- [ ] Image redistribution: emit `image_urls.jsonl` plus a download script instead of image
-      bytes for Wikipedia / OVEN sources.
-- [ ] `load_dataset.py` (HF `datasets` loader whose `Features` match SCHEMA §1.1).
-- [ ] `validate_dataset.py --require-provenance` passes on the exported bundle.
-
-### Stage 4 — Coverage and real runs
-- [ ] G7: mock encoders so the mock pipeline emits `image_search` steps with image-side
-      evidence.
-- [ ] G8: per-benchmark configs and a documented `--n 100` pilot for GQA and ScienceQA;
-      multiple-choice outcome rule.
-- [ ] Real InfoSeek pilot (`--n 100`), read `stats.json`, tune verifier bands, then scale up.
+### Stage D — Release bundle (G4)
+- [ ] `export_release.py`: merge benchmarks, `corpus.jsonl` export, `manifest.json`
+      (line counts + sha256 + version), `DATASET_CARD.md` from `stats.json` + provenance
+- [ ] Image redistribution: `image_urls.jsonl` + download script for Wikipedia / OVEN images
+- [ ] `load_dataset.py` (HF `datasets` loader whose `Features` match SCHEMA §1.1)
 
 ## Working conventions
 
-- Every change keeps `pytest` and `run_pipeline.py --mock --force` +
-  `validate_dataset.py` green.
+- Every change keeps `pytest` and `run_pipeline.py --mock` green (the mock build must
+  validate CONFORMANT).
 - Algorithms go in `src/evidencetree/`; `DatasetConstruct/` only orchestrates.
 - Generated data stays under `data/` (gitignored); never commit outputs or `.env`.
+  The split id lists under `DatasetConstruct/splits/` are committed.

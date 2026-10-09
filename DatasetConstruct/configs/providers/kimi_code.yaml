@@ -1,0 +1,11 @@
+# Kimi Code (Moonshot coding plan), OpenAI-compatible protocol.
+# Use: --provider kimi_code (try_rationale_model.py, step 5) / --judge-provider kimi_code (step 4)
+# Key: KIMI_CODE_API_KEY=... in DatasetConstruct/.env
+# CHECK base_url and model against your Kimi Code console/docs — they may change.
+# If this endpoint rejects the call, try kimi_code_anthropic (same key, Anthropic protocol).
+provider: openai
+base_url: https://api.kimi.com/coding/v1
+model: kimi-for-coding
+api_key_env: KIMI_CODE_API_KEY
+max_new_tokens: 1024   # headroom in case the model spends tokens on reasoning first
+timeout: 180

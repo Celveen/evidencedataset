@@ -1,203 +1,167 @@
 # DatasetConstruct — ETBench-Open construction pipeline
 
-ETBench-Open is the step-level dataset used to train ET-PRM. This directory turns a
-benchmark's own corpus into labeled `(state, action, score, rationale)` records: a policy
-VLM runs MCTS over the typed action space `{text_search, image_search, answer}`, and every
-step of every rollout is scored and explained. Retrieval never leaves the local index.
+ETBench-Open is the step-level dataset used to train ET-PRM. This directory turns
+each benchmark's own corpus (InfoSeek, ScienceQA, GQA) into labeled
+`(state, action, score, rationale)` records: a policy VLM runs MCTS over the typed
+action space `{text_search, image_search, answer}`, and the tree nodes are
+labeled, sampled, judged and explained. Retrieval never leaves the local index.
+
+The design and its rationale are in [DESIGN.md](DESIGN.md); record formats in
+[SCHEMA.md](SCHEMA.md); progress in [ROADMAP.md](ROADMAP.md).
 
 ```text
-queries.jsonl + corpus.jsonl
-  Step 1  policy VLM drives MCTS; every rollout is kept, not just the best one
-     → <name>_trajectories.jsonl
-  Step 2  local grounding (unified CLIP) + tree-level outcome credit + answer-support gate
-     → <name>_scored.jsonl        (one step-level sample per step)
-  Step 3  strong LLM writes a rationale for the score; 5-rule QC with regeneration
-     → <name>_rationales.jsonl
-  Step 4  quality filter + query-disjoint train/val split
-     → etbench_open/{train,val}.jsonl + stats.json
+queries.jsonl (seeds) + corpus.jsonl            eval_queries.jsonl is never read here
+  Step 1  MCTS rollouts, every rollout kept          -> trajectories.jsonl   (no API)
+  Step 2  CLIP grounding + tree-level credit          -> labeled.jsonl        (no API)
+  Step 3  length/gap filters, node collapse,
+          budgeted sibling-group sampling             -> sampled.jsonl        (no API)
+  Step 4  answer-support judge, sampled answers only  -> scored.jsonl         (API)
+  Step 5  rationale + 5-rule QC                       -> rationales.jsonl     (API)
+  Step 6  splits, provenance, pairs, stats, validation
+                    -> data/etbench_open/<benchmark>/{train,val}.jsonl, pairs_*.jsonl, stats.json
 ```
 
-The algorithms live in the main package (`src/evidencetree/prm/{verifiers,data_gen,rationale_gen}.py`,
-`src/evidencetree/mcts/`); this directory only orchestrates. Step 1 assembles its search
-stack with [`build_search_stack`](../src/evidencetree/pipeline/assembly.py) — the same
-function `scripts/run_inference.py` calls — so construction and inference trees cannot
-drift apart. Record formats are specified in [SCHEMA.md](SCHEMA.md).
-Remaining work toward a release is tracked in [ROADMAP.md](ROADMAP.md).
+Intermediate files live in `data/construction/<benchmark>/`. The algorithms live
+in the main package (`src/evidencetree/prm/`, `mcts/`, `data/`); this directory
+only orchestrates. Step 1 assembles its search stack with
+[`build_search_stack`](../src/evidencetree/pipeline/assembly.py), the same function
+`scripts/run_inference.py` calls, so construction and inference cannot drift apart.
 
 ## Quickstart
 
 ```bash
-# Smoke test: synthetic data, template rationales, zero API calls, no downloads
+# Smoke test: synthetic image-bearing world, stand-in encoders, template
+# rationales — zero API calls, no downloads
 python DatasetConstruct/run_pipeline.py --mock
 
-# Real run — needs prepared data and API keys (below). Always pilot a small run first.
-python DatasetConstruct/run_pipeline.py --n 100
-python DatasetConstruct/run_pipeline.py --config DatasetConstruct/config.qwen25vl.yaml --n 100
+# Real runs (after data preparation, below)
+python DatasetConstruct/preflight.py --benchmark infoseek        # checks, generates nothing
+python DatasetConstruct/run_pipeline.py --benchmark infoseek --n 100 \
+    --set output.dir=data/pilot/construction --set output.dataset_dir=data/pilot/etbench_open
+python DatasetConstruct/audit_report.py --file data/pilot/construction/infoseek/rationales.jsonl
+python DatasetConstruct/run_pipeline.py --benchmark infoseek     # full build
 
-python DatasetConstruct/run_pipeline.py --steps 3,4             # a subset of steps
-python DatasetConstruct/run_pipeline.py --force                 # ignore existing output
-python DatasetConstruct/run_pipeline.py --set mcts.rollouts=4   # dotted-key overrides
-python DatasetConstruct/run_pipeline.py --seed 1                # replicate seed (paper: 0/1/2)
+python DatasetConstruct/run_pipeline.py --benchmark gqa --steps 1,2,3   # free steps only
+python DatasetConstruct/run_pipeline.py --config DatasetConstruct/configs/scienceqa.yaml
+python DatasetConstruct/run_pipeline.py --set sampling.budget_per_query=2   # dotted overrides
 ```
 
-Mock mode loads a synthetic InfoSeek-shaped benchmark, forces the policy and rationale
-backends to `mock`, falls back to BM25 retrieval (no CLIP download), and uses the offline
-lexical verifiers. Its outputs take a `mock_` filename prefix and Step 4 writes to
-`<dataset_dir>/mock/`, so a smoke run never touches real data.
-
-Each step is also a standalone script (`step1_gen_trajectories.py` … `step4_quality_filter.py`,
-same flags), and all steps resume from partial output: Step 1 skips `query_id`s already
-written, Steps 2-4 skip `sample_id`s already written. Rerunning an interrupted command
-continues where it stopped.
+Each step is also a standalone script (`step1_gen_trajectories.py` …
+`step6_finalize.py`, same flags). Steps 1, 2, 4 and 5 resume from partial output;
+step 3 keeps an existing sample unless `--force`, so the paid steps never see
+their input change. Mock outputs go to `data/construction/mock/` and
+`data/etbench_open/mock/`.
 
 ## Data preparation
 
-| Script | Benchmark | Produces |
-| --- | --- | --- |
-| `data_prep/prepare_infoseek.py` | InfoSeek | `infoseek_queries.jsonl` from the official annotations |
-| `data_prep/build_corpus.py` | InfoSeek | `infoseek_corpus.jsonl` — Wikidata entity → Wikipedia plaintext → ~1200-character chunks |
-| `data_prep/download_infoseek_val_images.py` | InfoSeek | OVEN query images for the validation split (shard by shard, low peak disk) |
-| `data_prep/prepare_infoseek_corpus_images.py` | InfoSeek | corpus-side Wikipedia images; attaches `image_path` to chunks and invalidates the cached index |
-| `data_prep/prepare_gqa_30k.py` | GQA | 30k balanced-train subset: `queries.jsonl`, `corpus.jsonl` (scene-graph text), `stats.json` |
-| `data_prep/download_gqa_assets.sh` | GQA | official questions / scene graphs / images archives |
-| `data_prep/prepare_other_datasets.py` | ScienceQA, MRAG-Bench, KVQA | `queries.jsonl`, `corpus.jsonl`, `assets/` |
-
-Every benchmark is normalized to the same gitignored layout. InfoSeek keeps the historical
-filenames `infoseek_queries.jsonl` / `infoseek_corpus.jsonl`.
+Every benchmark is normalized to the same layout; image paths inside the files are
+relative to the benchmark directory.
 
 ```text
 data/corpus/<benchmark>/
-├── queries.jsonl        # query_id, question, gold_answers, image_path, metadata
-├── corpus.jsonl         # doc_id, title, text, optional image_path / entity_id
-├── assets/              # extracted query and page images
-└── unified_clip_index/  # cached CLIP index, built on the first real run
+├── queries.jsonl        # construction seeds: query_id, question, gold_answers, image_path, metadata
+├── eval_queries.jsonl   # held-out evaluation questions (never used to build data)
+├── corpus.jsonl         # doc_id, title, text, optional image_path, entity_id
+├── images/
+├── unified_clip_index/  # cached CLIP index, built on the first run
+└── bm25_index/          # cached BM25 index, built on the first run
+DatasetConstruct/splits/<benchmark>/{seed_ids,eval_ids}.txt, split_report.json   # committed
 ```
 
-InfoSeek raw annotations go in `data/corpus/infoseek/raw/`, from
-`http://storage.googleapis.com/gresearch/open-vision-language/infoseek/<filename>`:
-`infoseek_val.jsonl` (validation questions with `answer` / `answer_eval`),
-`infoseek_val_withkb.jsonl` (query → Wikidata entity mapping, which drives corpus
-building), and `infoseek_test.jsonl` (answers withheld, leaderboard only).
-
-```bash
-python DatasetConstruct/data_prep/prepare_infoseek.py --raw-dir data/corpus/infoseek/raw
-python DatasetConstruct/data_prep/prepare_infoseek.py --images-dir /path/to/oven_images   # optional
-python DatasetConstruct/data_prep/build_corpus.py --limit 50   # trial run; omit --limit for all entities
-```
-
-`data_prep/build_corpus.py` resolves each Wikidata id to its English Wikipedia title, fetches page
-plaintext with backoff, caches pages in `raw/wiki_pages.jsonl` (resumable), and chunks them.
-Corpus construction is a one-time offline step; the pipeline itself only queries the local
-index. Queries whose image is unavailable get `image_path=null` and still run the text-only
-path. Scripts that read from an external dataset disk take the source location as a flag —
-pass your own paths rather than relying on the built-in defaults:
-
-```bash
-python DatasetConstruct/data_prep/prepare_gqa_30k.py --raw-root /path/to/GQA --out-dir data/corpus/gqa --n 30000
-python DatasetConstruct/data_prep/prepare_other_datasets.py --dataset scienceqa \
-    --source-root /path/to/datasets --output-root data/corpus --n 0   # --n 0 = all samples
-```
-
-To build data for another benchmark, override `benchmark`, `data.data_dir` and the four
-`output.*` paths with `--set`.
-
-## Policy VLM and API keys
-
-`config.yaml` points `policy` at a hosted OpenAI-compatible endpoint;
-`config.qwen25vl.yaml` points it at a local Qwen2.5-VL-7B-Instruct server, which is how the
-released data is generated.
-
-```bash
-python DatasetConstruct/serve_qwen25vl.py --model /path/to/Qwen2.5-VL-7B-Instruct --port 8000
-```
-
-`--model` defaults to `models/Qwen2.5-VL-7B-Instruct` relative to the repository root, and
-the server exposes `/v1/chat/completions`, `/v1/models` and `/health`.
-`config.qwen25vl.yaml` keeps the Step 2 CLIP verifier and the retriever's image encoder on
-CPU (`verifier.device`, `retriever.image.device`) so they do not compete with the served
-model for GPU memory.
-
-Copy `.env.example` to `DatasetConstruct/.env` and fill it in. `.env` is gitignored and
-never committed; already-exported environment variables take precedence over the file. Only
-variable *names* appear anywhere in the repository.
-
-| Variable | Used by | Notes |
+| Benchmark | Source | Command |
 | --- | --- | --- |
-| `DASHSCOPE_API_KEY` | Step 1 policy VLM | the hosted endpoint configured in `config.yaml` |
-| `LOCAL_QWEN_API_KEY` | Step 1 policy VLM | the local server ignores the key; any non-empty placeholder works |
-| `DEEPSEEK_API_KEY` | Step 2 answer-support judge, Step 3 rationale | |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | optional | only if you switch provider |
+| models, GQA, ScienceQA | ModelScope (reachable from the server) | `bash DatasetConstruct/data_prep/download_assets.sh` |
+| InfoSeek | GCS / HuggingFace / Wikimedia (not reachable) | on a machine with internet: `python DatasetConstruct/fetch_kit/fetch_infoseek.py all --kit ~/infoseek_kit`, copy the kit, then `python DatasetConstruct/data_prep/import_infoseek_kit.py --kit <kit>` — see [fetch_kit/README.md](fetch_kit/README.md) |
+| ScienceQA | — | `python DatasetConstruct/data_prep/prepare_scienceqa.py --src data/raw/ScienceQA` |
+| GQA | + `sceneGraphs.zip` from `fetch_infoseek.py gqa-scenegraphs` | `python DatasetConstruct/data_prep/prepare_gqa.py --src data/raw/GQA --scene-graphs <zip>` |
 
-Models and endpoints are changed in the `policy`, `verifier.support.generation` and
-`rationale.generation` blocks: `provider` (`openai` covers any OpenAI-compatible endpoint,
-`anthropic` for Claude), `model`, `base_url`, and `api_key_env` (which variable to read).
-Images attached to multimodal queries are uploaded as base64 automatically.
+Each preparation script selects the ~2K held-out evaluation questions and the
+~20K construction seeds with `evidencetree.data.splits` (deterministic; the
+leakage rules are in DESIGN.md §4) and writes the id lists under `splits/`.
+
+## Policy VLM, judge, rationale model, API keys
+
+```bash
+cp DatasetConstruct/site.env.example DatasetConstruct/site.env   # weights dir, image, GPUs
+bash DatasetConstruct/serve_policy_vllm.sh      # step 1: one policy server per GPU, ports 8100+
+bash DatasetConstruct/serve_rationale_vllm.sh   # steps 4-5: local judge/rationale model, port 8020
+```
+
+List every server under `policy.base_url` in `configs/base.yaml`. If vLLM cannot be
+installed, `serve_qwen25vl.py` is a (much slower) transformers-based fallback server. Models and
+endpoints are changed only in the config: `policy`, `verifier.support.generation`
+and `rationale.generation` each take `provider` (`openai` covers any
+OpenAI-compatible endpoint, `anthropic` for Claude), `model`, `base_url` and
+`api_key_env` (the name of the variable holding the key).
+
+Ready endpoint blocks live in `configs/providers/` (`kimi_code`,
+`kimi_code_anthropic`, `moonshot`, `deepseek`, `local_qwen3_coder`); select one with
+`--provider` (steps 4/5, `try_rationale_model.py`) or `--rationale-provider` /
+`--judge-provider` (`run_pipeline.py`, `preflight.py`) instead of editing `base.yaml`.
+
+Steps 4 and 5 need only their input file and an API key, so they can run on a
+machine that reaches the provider when the server cannot (Moonshot/Kimi are not
+reachable from the construction server): `--input` / `--output` take explicit
+paths, and step 6 records the models from the rows. Commented Kimi settings (both
+the OpenAI-protocol Moonshot platform and an Anthropic-protocol Kimi Code key) are
+in `configs/base.yaml`; try a model with `try_rationale_model.py --n 3` first.
+See DESIGN.md §9.
+
+Copy `.env.example` to `DatasetConstruct/.env` and fill it in. `.env` is
+gitignored; already-exported variables take precedence over the file.
+
+| Variable | Used by |
+| --- | --- |
+| `LOCAL_QWEN_API_KEY` | step 1 policy (vLLM `--api-key`; any value, same on both sides) |
+| `DEEPSEEK_API_KEY` | step 4 support judge, step 5 rationales (default provider) |
+| `MOONSHOT_API_KEY` / `KIMI_CODE_API_KEY` | optional: Kimi for step 4 / 5 |
 
 ## Configuration
 
-Meaningful knobs in [`config.yaml`](config.yaml); `--set key.subkey=value` overrides any of
-them on the command line.
+`configs/base.yaml` holds the shared settings; `configs/{infoseek,scienceqa,gqa}.yaml`
+inherit it (`_base_`) and add their data paths. The knobs that matter:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `data.data_dir` / `n_queries` / `seed` | `data/corpus/infoseek` / 100 / 0 | input directory, query budget, sampling seed (`--seed` sets query *and* policy sampling seeds together) |
-| `mcts.rollouts` | 10 | rollout budget *P* per query; upper bound on trajectories per query |
-| `mcts.max_depth` / `top_k_children` | 3 / 3 | maximum actions per trajectory; candidates kept per expansion |
-| `mcts.early_stop_q` | 2.0 | > 1 disables early stopping, so rollouts stay diverse |
-| `retriever.backend` | `unified` | `unified` (one CLIP space for text and image units) \| `bm25` \| `hybrid` |
-| `retriever.dedupe` | `entity` | `entity` \| `doc` \| `none` — collapse duplicate units before top-*k* truncation |
-| `retriever.top_k` / `clip_model` | 5 / `clip-ViT-B-32` | results per search action; CLIP model backing the unified index |
-| `retriever.image_search` | `true` | enable `image_search`; auto-disabled when queries carry no images, or in mock runs without injected encoders |
-| `verifier.backend` | `clip` | `clip` (real grounding) \| `lexical` (offline fallback, forced in mock) |
-| `verifier.{text,image}_cos_lo` / `_cos_hi` | 0.5 / 0.9, 0.15 / 0.32 | cosine bands mapping text- and image-side similarity onto `[0,1]` |
-| `verifier.alpha` | 0.5 | fusion weight: `score = alpha*local + (1-alpha)*outcome` |
-| `verifier.support.backend` | `api` | `api` \| `lexical` \| `off` — answer-support judge |
-| `verifier.support.floor` / `unsupported_threshold` | 0.3 / 0.3 | answer-step floor `score = outcome*(floor + (1-floor)*support)`; `outcome >= 0.5` with `support <=` threshold marks `unsupported_correct` |
-| `rationale.max_attempts` / `concurrency` | 3 / 8 | regenerations allowed on QC failure; parallel rationale requests |
-| `quality.min_steps` / `max_steps` | 2 / 8 | trajectories outside this length are dropped whole |
-| `quality.max_grounding_outcome_gap` | 0.7 | drop samples where \|local − outcome\| exceeds this (noisy label) |
-| `quality.dedupe_within_query` / `val_fraction` | `true` / 0.05 | drop identical action sequences within a query; validation share, split by `query_id` |
-| `prm.scorer` / `action_gate.enabled` | `overlap` / `false` | Step 1 rollout guidance signal (not a dataset label); optional per-benchmark action-type restriction |
+| `data.n_queries` / `seed_ids` / `eval_ids` | 20000 / splits files | seeds per benchmark; the id lists enforce the holdout |
+| `mcts.rollouts` / `max_depth` / `top_k_children` | 10 / 3 / 3 | P, d_max, k (paper §5.1) |
+| `mcts.expansion` | `diverse` | keep one child per proposed action type first |
+| `step1.concurrency` | 32 | queries searched in parallel |
+| `retriever.backend` / `top_k` / `image.top_k` | `hybrid` / 3 / 1 | BM25 + CLIP; text top-3, image top-1 |
+| `verifier.window_words` | 48 | grounding scores chunks as the max over windows |
+| `verifier.{text,image}_cos_lo/hi` | 0.5/0.9, 0.15/0.32 | calibration bands — refit from the pilot |
+| `verifier.alpha`, `support.floor` | 0.5, 0.3 | Eq. 5 and Eq. 6 |
+| `quality.min_steps` / `max_steps` / `max_grounding_outcome_gap` | 2 / 8 / 0.7 | drop rules |
+| `sampling.budget_per_query` / `max_per_query` | 3 / 9 | sampled nodes = 3 × seeds; the main cost knob |
+| `rationale.evidence_chars` | 300 / 1500 / 1500 | prompt truncation (earlier evidence, answer steps, observation) |
+| `rationale.batch` / `max_group` | `group` / 6 | siblings (same state) share one request; `node` = one request per sample |
+| `pairs.margin` | 0.3 | minimum score gap of a preference pair |
+| `quality.val_fraction` / `test_fraction` | 0.05 / 0 | query-disjoint splits |
 
 ## Outputs and inspection
 
-Step outputs go to the paths in the `output` block: `<name>_trajectories.jsonl` (one
-trajectory per line), `<name>_scored.jsonl` and `<name>_rationales.jsonl` (one step-level
-sample per line), and `data/etbench_open/{train,val}.jsonl` plus `stats.json` with
-kept/dropped counts, action-type distribution and mean scores.
-
 ```bash
-# Render any of the four files as a compact, truncated summary
-python DatasetConstruct/inspect_trajectories.py data/etbench_open/train.jsonl --n 5
+python DatasetConstruct/inspect_trajectories.py data/construction/infoseek/scored.jsonl --n 5
 python DatasetConstruct/inspect_trajectories.py <file> --query <query_id> --action image_search --full
-
-# Deterministic, download-free trace of full trajectories on a mixed text/image scene
-python scripts/demo_5vqa.py
-
-# Check released files against SCHEMA.md (exit 0 = conformant)
-python DatasetConstruct/validate_dataset.py data/etbench_open/train.jsonl data/etbench_open/val.jsonl
-python DatasetConstruct/validate_dataset.py data/etbench_open/train.jsonl --require-provenance
+python DatasetConstruct/audit_report.py --benchmark infoseek --n 100          # Markdown audit sheet
+python DatasetConstruct/validate_dataset.py data/etbench_open/infoseek/train.jsonl \
+    data/etbench_open/infoseek/val.jsonl --require-provenance
 ```
 
-`validate_dataset.py` takes one or more JSONL paths and checks field presence, score ranges,
-the score-fusion identity, rationale QC, re-distributable image paths, and — given more than
-one file — that no `query_id` appears in two splits. `--min-steps`, `--max-steps` and
-`--max-gap` mirror the `quality` block.
-
-Scale up in stages: `--mock`, then `--n 100`, then the full run. Step 1 issues roughly
-`n_queries × rollouts` policy calls, Step 2 one judge call per answer step when
-`verifier.support.backend: api`, and Step 3 about one strong-LLM call per sample plus
-regenerations, so `stats.json` is worth reading before every increase. A high
-`rationale_qc` drop rate points at the rationale model; a high `grounding_outcome_gap` drop
-rate points at the verifier bands or the outcome metric.
+`stats.json` reports per-split counts, action types, mean trajectory length, score /
+grounding / credit histograms, outcome positive rate per answer type, support labels,
+rationale QC, drops per rule, pair counts, the validation result and the provenance.
+Read it before every scale-up (DESIGN.md §6 lists what to look for).
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `Step N output not found` | Run the previous step, and keep `--mock` consistent across steps — mock outputs are separate `mock_`-prefixed files |
-| `Real InfoSeek data not found` | `data.data_dir` must contain `infoseek_queries.jsonl` and `infoseek_corpus.jsonl`; run `prepare_infoseek.py` and `build_corpus.py`, or use `--mock` |
-| `image_search` never fires | The log line `image_search disabled for ...` reports why: queries must carry `image_path`, and a unified index must exist |
-| Empty rationales, budget consumed | Reasoning models can spend the whole token budget on thinking tokens; the generation blocks pass `extra_body.thinking: {type: disabled}` for this reason |
-| Step 3 exits on "transient connection-error rationales" | Those rows are dropped automatically; rerun Step 3 and they are regenerated |
-| `Ignoring stale unified CLIP index` | The cached index does not match the corpus size — delete `<data_dir>/unified_clip_index/` and let it rebuild |
+| `Step N output not found` | run the previous step; keep `--mock` consistent across steps |
+| `Prepared benchmark data not found` | run the benchmark's data preparation, or use `--mock` |
+| `refusing to load them for construction` | the seeds file contains evaluation ids — rerun data preparation |
+| `data.seed_ids and data.eval_ids are required` | the split id files are missing (`require_splits`) |
+| `image_search disabled for ...` | queries lack `image_path` or no unified index exists |
+| empty rationales, budget consumed | reasoning models spend the budget on thinking tokens; keep `extra_body.thinking: {type: disabled}` |
+| step 5 exits on transient-failure rationales | rerun step 5; those rows are regenerated |
+| `Ignoring stale unified CLIP index` | the corpus changed; the index is rebuilt automatically |

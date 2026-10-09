@@ -100,10 +100,25 @@ def test_hybrid_backend(data):
     assert hits and len({(h.doc_id, h.result_modality) for h in hits}) == len(hits)
 
 
-def test_mock_without_encoders_falls_back_to_bm25(data):
-    """Smoke runs must never download CLIP: unified -> bm25, image off."""
+def test_mock_image_world_uses_stand_in_encoders(data):
+    """Smoke runs never download CLIP: an image-bearing mock world runs the
+    unified mechanics on the deterministic mock encoders instead."""
+    from evidencetree.utils.mock_encoders import mock_text_encoder
+
     queries, corpus = data
     searcher = build_search_stack(_cfg(), queries, corpus, mock=True)
+    retriever = searcher.executor.text_retriever
+    assert isinstance(retriever, UnifiedClipRetriever)
+    assert retriever._text_encoder is mock_text_encoder
+    assert searcher.executor.image_retriever is retriever
+    assert searcher.proposer.enable_image_actions is True
+
+
+def test_mock_without_encoders_falls_back_to_bm25(data):
+    """With stand-in encoders disabled: unified -> bm25, image off."""
+    queries, corpus = data
+    cfg = _cfg(mock_encoders=False)
+    searcher = build_search_stack(cfg, queries, corpus, mock=True)
     assert isinstance(searcher.executor.text_retriever, BM25Retriever)
     assert searcher.executor.image_retriever is None
     assert searcher.proposer.enable_image_actions is False
@@ -178,3 +193,25 @@ def test_same_cfg_builds_identical_stacks(data):
     b = build_search_stack(_cfg(), queries, corpus, mock=True,
                            text_encoder=_txt_enc, image_encoder=_img_enc)
     assert fingerprint(a) == fingerprint(b)
+
+
+def test_mock_world_exercises_image_chain(tmp_path):
+    """The mock benchmark with assets: image queries leave the entity unnamed,
+    image_search identifies it, and a title follow-up text_search fetches the fact."""
+    from evidencetree.eval.benchmarks import load_benchmark
+
+    queries, corpus = load_benchmark("infoseek", n=200, mock=True, mock_asset_dir=tmp_path)
+    image_queries = [q for q in queries if q.image_path]
+    assert len(image_queries) == 40 and all(q.metadata["entity"] not in q.question
+                                            for q in image_queries)
+    cfg = _cfg(backend="hybrid", top_k=3, image={"top_k": 1})
+    cfg["mcts"] = {"rollouts": 6, "max_depth": 3, "top_k_children": 3,
+                   "early_stop_q": 2.0, "expansion": "diverse"}
+    searcher = build_search_stack(cfg, queries, corpus, mock=True)
+    q = image_queries[0]
+    result = searcher.search(q.question, image_path=q.image_path)
+    paths = [[a.action_type for a in r.state.actions_taken] for r in result.rollout_log]
+    assert any(p[:1] == ["image_search"] for p in paths)
+    titles = {e.title for r in result.rollout_log for e in r.state.evidence
+              if e.result_modality == "image"}
+    assert q.metadata["entity"] in titles

@@ -1,0 +1,9 @@
+# Kimi via the Moonshot open platform (pay-as-you-go key from platform.moonshot.cn), OpenAI protocol.
+# Key: MOONSHOT_API_KEY=... in DatasetConstruct/.env
+# CHECK model: use a non-thinking Kimi model id listed in your console.
+provider: openai
+base_url: https://api.moonshot.cn/v1
+model: kimi-k2-turbo-preview
+api_key_env: MOONSHOT_API_KEY
+max_new_tokens: 600
+timeout: 180

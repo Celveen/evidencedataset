@@ -1,0 +1,12 @@
+# ScienceQA: multiple-choice science questions; the corpus holds lectures and
+# hints only (never the solution field). Seeds come from train + validation
+# (~17K questions in total, so the ~20K target is capped by the dataset).
+# Data: data_prep/prepare_scienceqa.py.
+_base_: base.yaml
+
+benchmark: scienceqa
+
+data:
+  data_dir: data/corpus/scienceqa
+  seed_ids: DatasetConstruct/splits/scienceqa/seed_ids.txt
+  eval_ids: DatasetConstruct/splits/scienceqa/eval_ids.txt

@@ -18,14 +18,16 @@ search:
 data:
   benchmark: infoseek
   data_dir: data/corpus/infoseek
+  queries_file: eval_queries.jsonl   # the held-out evaluation set (never used to build data)
   seed: 0
 
 retriever:
-  backend: unified             # unified | bm25 | hybrid — unified = ONE CLIP space,
+  backend: hybrid              # unified | bm25 | hybrid — hybrid = BM25 + ONE CLIP space,
                                # text+image units independently indexed, mixed top-k
                                # (mock runs auto-fall back to bm25: no model downloads)
   dedupe: entity               # entity | doc | none — dedupe before top-k truncation
-  top_k: 5
+  top_k: 3                     # paper §5.1: text top-3, image top-1
+  image_top_k: 1
   image_search: true           # query-image search over the SAME unified index
                                # (auto-disabled when queries carry no images, and in
                                # mock runs without injected encoders)
@@ -47,7 +49,8 @@ prm:                           # pluggable scorer; set scorer: visualprm + model
   mock_seed: 0
 
 outcome:
-  metric: exact_match
+  metric: benchmark              # benchmark | exact_match | f1 — `benchmark` applies the
+                                 # official rule (InfoSeek relaxed, ScienceQA multiple choice)
 
 output:
   report_dir: data/inference_reports

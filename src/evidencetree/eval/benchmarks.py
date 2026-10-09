@@ -1,21 +1,26 @@
 """Benchmark loaders.
 
-Benchmarks are normalized to a shared pair of JSONL files:
+Every benchmark is normalized to the same layout under its ``data_dir``:
 
-* ``queries.jsonl`` with question, answer, and optional image fields.
-* ``corpus.jsonl`` with retrievable text documents.
+* ``queries.jsonl``      — construction seed queries (question, gold answers,
+  optional image, metadata);
+* ``eval_queries.jsonl`` — held-out evaluation queries, never read by dataset
+  construction;
+* ``corpus.jsonl``       — retrievable documents (text chunks and/or images).
 
-InfoSeek keeps its historical ``infoseek_queries.jsonl`` /
-``infoseek_corpus.jsonl`` filenames. Two modes:
+Image paths inside these files are relative to ``data_dir`` (portable); the
+loader resolves them to runtime paths. Two modes:
 
 * ``mock=True``  -> a tiny synthetic, self-contained dataset. No download, no
   GPU. The corpus is constructed so BM25 can actually retrieve the supporting
-  document, which lets the smoke test exercise the full pipeline with signal.
-* ``mock=False`` -> load real InfoSeek from a local path / HuggingFace
-  ``datasets``. Raises a clear error if the data is not available so the failure
-  is obvious on the GPU server.
+  document; with ``mock_asset_dir`` it also paints entity images so the
+  image_search path runs end to end with the deterministic mock encoders.
+* ``mock=False`` -> load the prepared JSONL files. Raises a clear error if the
+  data is not available so the failure is obvious on the server.
 
-Later stages (E-VQA / MRAG-Bench / OK-VQA) will add loaders here (Stage 7).
+Leakage guard: ``include_ids`` restricts loading to the construction seed list
+and ``exclude_ids`` (the held-out evaluation ids) makes loading fail loudly if
+any evaluation query would enter construction.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import json
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 
 @dataclass
@@ -61,23 +67,12 @@ def load_infoseek(
     mock: bool = False,
     data_dir: str | Path | None = None,
     seed: int = 0,
+    **kwargs,
 ) -> tuple[list[Query], list[Document]]:
-    """Load (queries, corpus) for InfoSeek.
-
-    Args:
-        n: number of queries to load.
-        mock: if True, return a synthetic self-contained dataset.
-        data_dir: directory holding ``infoseek_queries.jsonl`` and
-            ``infoseek_corpus.jsonl`` (real mode). Defaults to
-            ``data/corpus/infoseek``.
-        seed: RNG seed for mock data / subsampling.
-
-    Returns:
-        ``(queries, corpus)``.
-    """
-    if mock:
-        return _mock_infoseek(n=n, seed=seed)
-    return _load_infoseek_real(n=n, data_dir=data_dir, seed=seed)
+    """Load (queries, corpus) for InfoSeek (see :func:`load_benchmark`)."""
+    return load_benchmark(
+        "infoseek", n=n, mock=mock, data_dir=data_dir, seed=seed, **kwargs
+    )
 
 
 def load_benchmark(
@@ -86,85 +81,90 @@ def load_benchmark(
     mock: bool = False,
     data_dir: str | Path | None = None,
     seed: int = 0,
+    *,
+    queries_file: str | None = None,
+    include_ids: Iterable[str] | None = None,
+    exclude_ids: Iterable[str] | None = None,
+    mock_asset_dir: str | Path | None = None,
 ) -> tuple[list[Query], list[Document]]:
-    """Load any benchmark converted to the shared JSONL format."""
+    """Load any benchmark converted to the shared JSONL format.
+
+    Args:
+        name: benchmark name (``infoseek`` / ``scienceqa`` / ``gqa`` / ...).
+        n: number of queries to sample (after the id filters).
+        mock: return the synthetic mock world instead.
+        data_dir: directory with ``queries.jsonl`` and ``corpus.jsonl``.
+        seed: sampling seed.
+        queries_file: alternative queries file name inside ``data_dir``
+            (``eval_queries.jsonl`` for evaluation runs).
+        include_ids: keep only these query ids (the construction seed list).
+        exclude_ids: held-out ids; loading raises if any loaded query is one.
+        mock_asset_dir: where the mock world writes its images (mock only;
+            None keeps the mock text-only).
+    """
+    if mock:
+        return _mock_infoseek(n=n, seed=seed, asset_dir=mock_asset_dir)
     normalized = name.lower().replace("-", "").replace("_", "")
-    if mock or normalized == "infoseek":
-        return load_infoseek(n=n, mock=mock, data_dir=data_dir, seed=seed)
     if data_dir is None:
-        raise ValueError(f"data.data_dir is required for benchmark {name!r}.")
-    return _load_jsonl_benchmark(n=n, data_dir=data_dir, seed=seed)
+        if normalized != "infoseek":
+            raise ValueError(f"data.data_dir is required for benchmark {name!r}.")
+        data_dir = Path("data/corpus/infoseek")
+    return _load_jsonl_benchmark(
+        n=n,
+        data_dir=data_dir,
+        seed=seed,
+        queries_file=queries_file,
+        include_ids=include_ids,
+        exclude_ids=exclude_ids,
+        legacy_prefix="infoseek_" if normalized == "infoseek" else "",
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Real loader
 # --------------------------------------------------------------------------- #
-def _load_infoseek_real(
-    n: int, data_dir: str | Path | None, seed: int
-) -> tuple[list[Query], list[Document]]:
-    data_dir = Path(data_dir) if data_dir else Path("data/corpus/infoseek")
-    queries_path = data_dir / "infoseek_queries.jsonl"
-    corpus_path = data_dir / "infoseek_corpus.jsonl"
-
-    if not queries_path.exists() or not corpus_path.exists():
-        raise FileNotFoundError(
-            "Real InfoSeek data not found.\n"
-            f"  Expected: {queries_path}\n"
-            f"            {corpus_path}\n"
-            "On the GPU server, download InfoSeek + its Wikipedia corpus and write\n"
-            "them as JSONL (one object per line):\n"
-            '  queries: {"query_id","question","gold_answers":[...],"image_path"?}\n'
-            '  corpus:  {"doc_id","text","title"?,"image_path"?}\n'
-            "Or run with --mock for a local smoke test."
-        )
-
-    corpus = [
-        Document(
-            doc_id=str(obj["doc_id"]),
-            text=obj["text"],
-            title=obj.get("title", ""),
-            image_path=obj.get("image_path"),
-            entity_id=obj.get("entity_id"),
-        )
-        for obj in _read_jsonl(corpus_path)
-    ]
-
-    queries = [
-        Query(
-            query_id=str(obj["query_id"]),
-            question=obj["question"],
-            gold_answers=_as_str_list(obj["gold_answers"]),
-            image_path=obj.get("image_path"),
-            metadata=obj.get("metadata", {}),
-        )
-        for obj in _read_jsonl(queries_path)
-    ]
-
-    if n < len(queries):
-        rng = random.Random(seed)
-        queries = rng.sample(queries, n)
-    return queries, corpus
+def _resolve_media(value: str | None, base: Path) -> str | None:
+    """Portable (data_dir-relative) media key -> runtime path."""
+    if not value:
+        return None
+    path = Path(value)
+    return str(path if path.is_absolute() else base / path)
 
 
 def _load_jsonl_benchmark(
-    n: int, data_dir: str | Path, seed: int
+    n: int,
+    data_dir: str | Path,
+    seed: int,
+    queries_file: str | None = None,
+    include_ids: Iterable[str] | None = None,
+    exclude_ids: Iterable[str] | None = None,
+    legacy_prefix: str = "",
 ) -> tuple[list[Query], list[Document]]:
     data_dir = Path(data_dir)
-    queries_path = data_dir / "queries.jsonl"
+    queries_path = data_dir / (queries_file or "queries.jsonl")
     corpus_path = data_dir / "corpus.jsonl"
+    if legacy_prefix and not queries_file:  # historical InfoSeek file names
+        legacy_q = data_dir / f"{legacy_prefix}queries.jsonl"
+        legacy_c = data_dir / f"{legacy_prefix}corpus.jsonl"
+        if not queries_path.exists() and legacy_q.exists():
+            queries_path = legacy_q
+        if not corpus_path.exists() and legacy_c.exists():
+            corpus_path = legacy_c
     if not queries_path.exists() or not corpus_path.exists():
         raise FileNotFoundError(
-            f"Converted benchmark data not found in {data_dir}.\n"
+            f"Prepared benchmark data not found in {data_dir}.\n"
             f"  Expected: {queries_path}\n"
-            f"            {corpus_path}"
+            f"            {corpus_path}\n"
+            "Run the benchmark's data preparation first (see "
+            "DatasetConstruct/README.md), or use --mock for a smoke test."
         )
 
     corpus = [
         Document(
             doc_id=str(obj["doc_id"]),
-            text=obj["text"],
+            text=obj.get("text") or "",
             title=obj.get("title", ""),
-            image_path=obj.get("image_path"),
+            image_path=_resolve_media(obj.get("image_path"), data_dir),
             entity_id=obj.get("entity_id"),
         )
         for obj in _read_jsonl(corpus_path)
@@ -174,11 +174,23 @@ def _load_jsonl_benchmark(
             query_id=str(obj["query_id"]),
             question=obj["question"],
             gold_answers=_as_str_list(obj["gold_answers"]),
-            image_path=obj.get("image_path"),
+            image_path=_resolve_media(obj.get("image_path"), data_dir),
             metadata=obj.get("metadata", {}),
         )
         for obj in _read_jsonl(queries_path)
     ]
+    if exclude_ids is not None:
+        held_out = set(exclude_ids)
+        leaked = sorted(q.query_id for q in queries if q.query_id in held_out)
+        if leaked:
+            raise ValueError(
+                f"{len(leaked)} queries in {queries_path.name} belong to the "
+                f"held-out evaluation split (e.g. {leaked[:3]}); refusing to "
+                "load them for construction."
+            )
+    if include_ids is not None:
+        wanted = set(include_ids)
+        queries = [q for q in queries if q.query_id in wanted]
     if n < len(queries):
         queries = random.Random(seed).sample(queries, n)
     return queries, corpus
@@ -262,7 +274,24 @@ _MOCK_DISTRACTORS = [
 ]
 
 
-def _mock_infoseek(n: int, seed: int) -> tuple[list[Query], list[Document]]:
+# Image-bearing mock queries never name the entity: it must be identified from
+# the picture (image_search) or from the color word (cross-modal text search),
+# mirroring InfoSeek's disambiguate-then-look-up chain.
+_IMAGE_QUESTIONS = {
+    "city": [
+        "In which city is the landmark in this photo located?",
+        "The {color} landmark shown here is in which city?",
+    ],
+    "country": [
+        "In which country is the landmark in this photo located?",
+        "The {color} landmark shown here is in which country?",
+    ],
+}
+
+
+def _mock_infoseek(
+    n: int, seed: int, asset_dir: str | Path | None = None
+) -> tuple[list[Query], list[Document]]:
     rng = random.Random(seed)
     corpus: list[Document] = []
     queries: list[Query] = []
@@ -274,6 +303,7 @@ def _mock_infoseek(n: int, seed: int) -> tuple[list[Query], list[Document]]:
                 doc_id=f"doc_{i}",
                 title=fact["entity"],
                 text=f"{fact['entity']}. {fact['fact']}",
+                entity_id=fact["entity"],
             )
         )
         for v in range(n_templates):
@@ -290,10 +320,64 @@ def _mock_infoseek(n: int, seed: int) -> tuple[list[Query], list[Document]]:
     for j, text in enumerate(_MOCK_DISTRACTORS):
         corpus.append(Document(doc_id=f"distractor_{j}", text=text))
 
+    if asset_dir is not None:
+        corpus_images, image_queries = _mock_image_world(Path(asset_dir))
+        corpus.extend(corpus_images)
+        queries.extend(image_queries)
+
     rng.shuffle(queries)
     if n < len(queries):
         queries = queries[:n]
     return queries, corpus
+
+
+def _mock_image_world(asset_dir: Path) -> tuple[list[Document], list[Query]]:
+    """One colored picture per mock entity (corpus side) plus a differently
+    shaped query picture of the same color; questions leave the entity unnamed."""
+    from PIL import Image, ImageDraw
+
+    from evidencetree.utils.mock_encoders import MOCK_COLORS
+
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    colors = list(MOCK_COLORS.items())
+    docs: list[Document] = []
+    queries: list[Query] = []
+    for i, fact in enumerate(_MOCK_FACTS):
+        color, rgb = colors[i % len(colors)]
+        entity_img = asset_dir / f"entity_{i}.png"
+        query_img = asset_dir / f"query_{i}.png"
+        if not entity_img.exists():
+            img = Image.new("RGB", (32, 32), "white")
+            ImageDraw.Draw(img).ellipse([4, 4, 28, 28], fill=rgb)
+            img.save(entity_img)
+        if not query_img.exists():
+            img = Image.new("RGB", (32, 32), "white")
+            ImageDraw.Draw(img).rectangle([6, 6, 26, 26], fill=rgb)
+            img.save(query_img)
+        docs.append(
+            Document(
+                doc_id=f"img_{i}",
+                title=fact["entity"],
+                text="",
+                image_path=str(entity_img),
+                entity_id=fact["entity"],
+            )
+        )
+        for v, template in enumerate(_IMAGE_QUESTIONS[fact["attr"]]):
+            queries.append(
+                Query(
+                    query_id=f"qi_{i}_{v}",
+                    question=template.format(color=color),
+                    gold_answers=[fact["value"]],
+                    image_path=str(query_img),
+                    metadata={
+                        "supporting_doc": f"doc_{i}",
+                        "attr": fact["attr"],
+                        "entity": fact["entity"],
+                    },
+                )
+            )
+    return docs, queries
 
 
 # --------------------------------------------------------------------------- #

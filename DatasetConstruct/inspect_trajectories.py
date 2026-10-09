@@ -7,11 +7,11 @@ each returned (with a snippet), the three
 score labels, and the rationale + its QC status.
 
 Auto-detects the file kind:
-  * trajectories  (has "steps")            -> per-trajectory action timeline
-  * scored / rationales (has "sample_id")  -> per-step labels + rationale
+  * trajectories  (has "steps")                      -> per-trajectory action timeline
+  * labeled / sampled / scored / rationales / splits  -> per-step labels + rationale
 
 Usage:
-    python DatasetConstruct/inspect_trajectories.py data/trajectories/mock_infoseek_rationales.jsonl
+    python DatasetConstruct/inspect_trajectories.py data/construction/mock/infoseek/rationales.jsonl
     python DatasetConstruct/inspect_trajectories.py <file> --n 5 --full
     python DatasetConstruct/inspect_trajectories.py <file> --query infoseek_val_00000000
     python DatasetConstruct/inspect_trajectories.py <file> --action image_search
@@ -44,7 +44,7 @@ def render_trajectory(t: dict, width: int) -> str:
     mark = "✓" if t.get("outcome_em", 0) >= 0.5 else "✗"
     out.append(
         f"══ {t['traj_id']}  outcome={t.get('outcome_em')}{mark}  "
-        f"λ={t.get('lambda')}  {len(t['steps'])} steps"
+        f"{len(t['steps'])} steps"
     )
     out.append(f"   Q: {trunc(t['question'], width)}")
     out.append(f"   gold: {t.get('gold_answers')}   image: {t.get('image_path')}")
@@ -74,6 +74,17 @@ def render_sample(s: dict, width: int) -> str:
         f"score={sc:.2f} (local={local_s}, outcome={s.get('outcome_credit', 0):.2f}, "
         f"n={s.get('n_traj_through')})"
     )
+    detail = s.get("grounding_detail") or {}
+    if detail.get("raw_cos") is not None or s.get("marginal_gain") is not None:
+        out.append(
+            f"   grounding: best={detail.get('modality')} raw_cos={detail.get('raw_cos')} | "
+            f"redundancy={s.get('evidence_redundancy')} marginal_gain={s.get('marginal_gain')}"
+        )
+    if a["type"] == "answer":
+        out.append(
+            f"   support: {s.get('answer_support_label')} ({s.get('answer_support')})"
+            + ("  UNSUPPORTED-CORRECT" if s.get("unsupported_correct") else "")
+        )
     out.append(f"   Q: {trunc(s['question'], width)}")
     out.append(f"   action: {a['type']}  {trunc(a.get('input', ''), 70)}")
     obs = s.get("observation_evidence", [])

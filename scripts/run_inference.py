@@ -51,6 +51,8 @@ def build_components(cfg: dict[str, Any], mock: bool):
         mock=mock,
         data_dir=data_cfg.get("data_dir"),
         seed=int(data_cfg.get("seed", 0)),
+        # evaluation reads the held-out eval_queries.jsonl written by data prep
+        queries_file=data_cfg.get("queries_file"),
     )
     log.info("Loaded %d queries, %d docs.", len(queries), len(corpus))
 
@@ -81,17 +83,21 @@ def seeded_config(cfg: dict[str, Any], seed: int) -> dict[str, Any]:
 
 def run(cfg: dict[str, Any], mock: bool) -> dict[str, Any]:
     queries, searcher = build_components(cfg, mock)
-    outcome_metric = cfg.get("outcome", {}).get("metric", "exact_match")
+    benchmark = str(cfg.get("benchmark") or cfg.get("data", {}).get("benchmark") or "infoseek")
+    outcome_metric = cfg.get("outcome", {}).get("metric", "benchmark")
 
     records: list[dict[str, Any]] = []
     action_usage: Counter[str] = Counter()
     for i, query in enumerate(queries):
         result = searcher.search(query.question, image_path=query.image_path)
-        em = (
-            metrics.f1_score(result.answer, query.gold_answers)
-            if outcome_metric == "f1"
-            else metrics.exact_match(result.answer, query.gold_answers)
-        )
+        if outcome_metric == "f1":
+            em = metrics.f1_score(result.answer, query.gold_answers)
+        elif outcome_metric == "exact_match":
+            em = metrics.exact_match(result.answer, query.gold_answers)
+        else:  # the benchmark's official rule (InfoSeek relaxed, ScienceQA choice, ...)
+            em = metrics.outcome_match(
+                result.answer, query.gold_answers, benchmark, query.metadata
+            )
         for action in result.best_state.actions_taken:
             action_usage[action.action_type] += 1
         records.append(

@@ -269,3 +269,75 @@ def test_llm_proposer_completes_text_branch_on_single_answer_reply():
     assert AnswerAction in types and TextSearchAction in types
     ts = [a for a in actions if isinstance(a, TextSearchAction)]
     assert any("Allan Cunningham" in a.query for a in ts)
+
+
+# --------------------------------------------------------------------------- #
+# Construction-time expansion, neutral prior, short answers
+# --------------------------------------------------------------------------- #
+def test_overlap_scorer_gives_partial_trajectories_a_neutral_prior():
+    from evidencetree.prm.model import Trajectory, TrajectoryStep
+
+    scorer = HeuristicOverlapScorer()
+    partial = Trajectory(question="q", steps=[TrajectoryStep("text_search", "x", "obs")])
+    assert scorer.score(partial) == HeuristicOverlapScorer.PARTIAL_PRIOR
+    done = Trajectory(question="q", steps=[TrajectoryStep("text_search", "x", "paris is"),
+                                           TrajectoryStep("answer", "Paris")],
+                      final_answer="Paris")
+    assert scorer.score(done) == pytest.approx(1.0)
+
+
+def test_diverse_expansion_keeps_every_proposed_action_type():
+    from evidencetree.mcts.search import _round_robin_by_type
+    from evidencetree.mcts.node import MCTSNode
+
+    state = SearchState(question="q")
+    children = [
+        MCTSNode(state, action=AnswerAction(text="a1"), prior=0.9),
+        MCTSNode(state, action=AnswerAction(text="a2"), prior=0.8),
+        MCTSNode(state, action=AnswerAction(text="a3"), prior=0.7),
+        MCTSNode(state, action=TextSearchAction(query="t"), prior=0.5),
+        MCTSNode(state, action=ImageSearchAction(), prior=0.4),
+    ]
+    kept = _round_robin_by_type(children)[:3]
+    assert [c.action.action_type for c in kept] == ["answer", "text_search", "image_search"]
+    with pytest.raises(ValueError):
+        SearchConfig(expansion="random")
+    assert SearchConfig.from_dict({"search": {"expansion": "diverse"}}).expansion == "diverse"
+
+
+def test_clean_answer():
+    from evidencetree.mcts.proposer import clean_answer
+
+    assert clean_answer("Answer: Paris.") == "Paris"
+    assert clean_answer('**"September 7, 1963"**\nBecause the page says so.') == "September 7, 1963"
+    assert clean_answer("") == ""
+    assert len(clean_answer("word " * 100).split()) == 24
+
+
+def test_llm_proposer_drafts_short_answers_with_its_own_prompt():
+    class RecordingGenerator:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, prompt, docs, **kw):
+            self.calls.append((prompt, docs, kw))
+            return "Final answer: Canton, Ohio.\nThe hall opened there."
+
+    gen = RecordingGenerator()
+    state = SearchState(question="Where is this building?", image_path="/tmp/q.jpg")
+    action = LLMProposer(gen).propose_answer(state)
+    assert action.text == "Canton, Ohio"
+    prompt, docs, kw = gen.calls[0]
+    assert docs == [] and "short phrase" in prompt and kw["image_paths"] == ["/tmp/q.jpg"]
+
+
+def test_heuristic_proposer_adds_title_followup():
+    gen = build_generator({"backend": "mock", "mock_accuracy": 1.0, "mock_seed": 0})
+    state = SearchState(question="In which city is the landmark located?").advanced(
+        ImageSearchAction(),
+        [Evidence(evidence_id="e0", step_index=0, source_action="image_search",
+                  doc_id="img", text="", title="Eiffel Tower", image_path="e.png")],
+    )
+    queries = [a.query for a in HeuristicProposer(gen).propose(state, k=5)
+               if isinstance(a, TextSearchAction)]
+    assert any(q.startswith("Eiffel Tower") for q in queries)

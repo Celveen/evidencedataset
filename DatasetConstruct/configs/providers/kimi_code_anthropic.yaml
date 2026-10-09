@@ -1,0 +1,9 @@
+# Kimi Code (Moonshot coding plan), Anthropic-compatible protocol (needs `pip install anthropic`).
+# Key: KIMI_CODE_API_KEY=... in DatasetConstruct/.env
+# CHECK base_url and model against your Kimi Code console/docs.
+provider: anthropic
+base_url: https://api.kimi.com/coding/
+model: kimi-for-coding
+api_key_env: KIMI_CODE_API_KEY
+max_new_tokens: 1024
+timeout: 180

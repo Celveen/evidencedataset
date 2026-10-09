@@ -188,6 +188,41 @@ def keyword_query(question: str) -> str:
     return " ".join(tokens)
 
 
+_ANSWER_LEAD_RE = re.compile(
+    r"^\s*(?:final\s+answer|answer|short\s+answer)\s*[:：-]\s*", re.IGNORECASE
+)
+_MAX_ANSWER_WORDS = 24
+
+
+def clean_answer(text: str) -> str:
+    """Normalize a drafted answer to the short phrase the outcome rules expect.
+
+    Keeps the first non-empty line, drops an ``Answer:`` lead-in, wrapping
+    quotes / markdown emphasis and a trailing period, and caps the length (a
+    long answer is a sentence, which exact match would reject anyway).
+    """
+    lines = [ln.strip() for ln in str(text).strip().splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    out = _ANSWER_LEAD_RE.sub("", lines[0]).strip()
+    out = out.strip("*`\"' ").rstrip(".").strip()
+    words = out.split()
+    if len(words) > _MAX_ANSWER_WORDS:
+        out = " ".join(words[:_MAX_ANSWER_WORDS])
+    return out
+
+
+def title_followup_query(state: SearchState) -> TextSearchAction | None:
+    """Attribute lookup built from the first evidence title + question keywords
+    (the disambiguate-then-look-up chain: image_search names the entity, this
+    text_search fetches the asked attribute)."""
+    kq = keyword_query(state.question)
+    titles = [e.title for e in state.evidence if e.title]
+    if not titles or not kq:
+        return None
+    return TextSearchAction(query=f"{titles[0]} {kq}".strip())
+
+
 class HeuristicProposer:
     """Template-based proposer.
 
@@ -233,6 +268,10 @@ class HeuristicProposer:
         ):
             candidates.append(ImageSearchAction())
 
+        followup = title_followup_query(state)
+        if followup is not None and followup not in taken and followup not in candidates:
+            candidates.append(followup)
+
         # Answering blind (no evidence) is allowed only when nothing else is
         # left — the PRM is supposed to punish it, but don't waste budget.
         # Draft the answer (a generator call) only when it actually fits in k.
@@ -246,7 +285,7 @@ class HeuristicProposer:
         text = self.generator.generate(
             state.question, state.evidence_texts(), **kwargs
         )
-        return AnswerAction(text=text)
+        return AnswerAction(text=clean_answer(text))
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +329,19 @@ Rules:
 - Only answer when the collected evidence actually supports the answer, OR
   when the question is answerable from the image and question alone by
   perception, logic, or everyday commonsense (no external facts needed).
+- An answer "text" is ONLY the short answer: an entity name, a number with
+  its unit, a date, or the chosen option — never a sentence or explanation.
 {query_rule}Output ONLY the JSON lines."""
+
+_ANSWER_PROMPT = """Answer the question about the given image.
+
+Question: {question}
+Evidence collected so far:
+{evidence}
+
+Reply with ONLY the final answer as a short phrase: an entity name, a number
+with its unit, a date, or the chosen option. Use the evidence when it contains
+the answer; otherwise give your best guess. No explanation."""
 
 
 class LLMProposer:
@@ -323,7 +374,7 @@ class LLMProposer:
         allowed_actions = [f'  {{"type": "text_search", "query": "{query_hint}"}}']
         if self.enable_image_search:
             allowed_actions.append('  {"type": "image_search"}')
-        allowed_actions.append('  {"type": "answer", "text": "..."}')
+        allowed_actions.append('  {"type": "answer", "text": "<short answer>"}')
         prompt = _PROPOSE_PROMPT.format(
             question=state.question,
             evidence=evidence,
@@ -374,10 +425,10 @@ class LLMProposer:
             # lookup from the evidence-established title + question keywords
             # so search vs. answer is ALWAYS a real choice for UCT/the PRM.
             kq = keyword_query(state.question)
-            titles = [e.title for e in state.evidence if e.title]
-            for cand in (
-                [TextSearchAction(query=f"{titles[0]} {kq}".strip())] if titles and kq else []
-            ) + [TextSearchAction(query=kq or state.question)]:
+            followup = title_followup_query(state)
+            for cand in ([followup] if followup else []) + [
+                TextSearchAction(query=kq or state.question)
+            ]:
                 if cand not in taken and cand not in actions:
                     actions.append(cand)
                     break
@@ -386,12 +437,14 @@ class LLMProposer:
         return [a for a in actions if a not in taken][:k]
 
     def propose_answer(self, state: SearchState) -> AnswerAction:
-        text = self.generator.generate(
-            state.question,
-            state.evidence_texts(),
-            image_paths=self._vision_paths(state),
+        prompt = _ANSWER_PROMPT.format(
+            question=state.question,
+            evidence="\n".join(state.evidence_texts()) or "(none)",
         )
-        return AnswerAction(text=text)
+        text = self.generator.generate(
+            prompt, [], image_paths=self._vision_paths(state)
+        )
+        return AnswerAction(text=clean_answer(text))
 
     @staticmethod
     def _vision_paths(state: SearchState) -> list[str]:
@@ -419,7 +472,9 @@ class LLMProposer:
                     ImageSearchAction(region=tuple(region) if region else None)
                 )
             elif t == "answer" and obj.get("text"):
-                actions.append(AnswerAction(text=str(obj["text"])))
+                text = clean_answer(str(obj["text"]))
+                if text:
+                    actions.append(AnswerAction(text=text))
         return actions
 
     def _action_query(self, obj: dict, state: SearchState) -> str:

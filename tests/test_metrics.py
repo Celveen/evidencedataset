@@ -68,3 +68,42 @@ def test_infoseek_numeric_handles_commas_and_dict_gold():
 def test_infoseek_string_falls_back_to_exact_match():
     assert metrics.infoseek_accuracy("Aare", ["Lutschine", "Aare", "Aar"]) == 1.0
     assert metrics.infoseek_accuracy("Paris", ["Aare"]) == 0.0
+
+
+# --- Multiple choice (ScienceQA) and benchmark dispatch --------------------- #
+_CHOICES = ["reptile", "mammal", "bird"]
+
+
+def test_parse_choice_accepts_letter_text_and_both():
+    for pred in ["B", "(B)", "B.", "b", "mammal", "B. mammal", "Answer: B",
+                 "The answer is mammal", "Option B", "B) mammal because it has fur"]:
+        assert metrics.parse_choice(pred, _CHOICES) == 1, pred
+
+
+def test_parse_choice_rejects_ambiguous_or_contradictory():
+    assert metrics.parse_choice("B. reptile", _CHOICES) is None      # letter vs text clash
+    assert metrics.parse_choice("mammal or bird", _CHOICES) is None  # two options named
+    assert metrics.parse_choice("fish", _CHOICES) is None
+    assert metrics.parse_choice("Z", _CHOICES) is None
+
+
+def test_parse_choice_prefers_longer_option_names():
+    choices = ["sea", "sea lion"]
+    assert metrics.parse_choice("a sea lion", choices) == 1
+
+
+def test_outcome_match_dispatch():
+    meta = {"choices": _CHOICES, "answer_index": 1}
+    assert metrics.outcome_match("B", ["mammal"], "scienceqa", meta) == 1.0
+    assert metrics.outcome_match("A", ["mammal"], "scienceqa", meta) == 0.0
+    assert metrics.outcome_match("150 g", _NUMERIC_GOLD, "infoseek") == 1.0
+    assert metrics.outcome_match("Yes", ["yes"], "gqa") == 1.0
+    assert metrics.outcome_match("the cup", ["cup"], "gqa") == 1.0
+    assert metrics.outcome_metric_name("InfoSeek") == "infoseek_relaxed"
+    assert metrics.outcome_metric_name("scienceqa") == "scienceqa_multiple_choice"
+
+
+def test_answer_type():
+    assert metrics.answer_type(_NUMERIC_GOLD) == "value"
+    assert metrics.answer_type(["Aare"]) == "string"
+    assert metrics.answer_type(["mammal"], {"choices": _CHOICES}) == "choice"

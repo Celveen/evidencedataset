@@ -1,0 +1,9 @@
+# Our own local rationale / judge server (serve_rationale_vllm.sh): Qwen3-Coder-30B-A3B
+# on GPUs 0-3, vLLM bound to localhost:8020. The key must match the server's --api-key.
+# Key: LOCAL_QWEN_API_KEY=local in DatasetConstruct/.env
+provider: openai
+base_url: http://127.0.0.1:8020/v1
+model: qwen3-coder-30b-a3b
+api_key_env: LOCAL_QWEN_API_KEY
+max_new_tokens: 900
+timeout: 180
