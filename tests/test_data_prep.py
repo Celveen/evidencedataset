@@ -227,7 +227,9 @@ def test_prepare_scienceqa(tmp_path):
     corpus_text = (out / "corpus.jsonl").read_text()
     assert "SECRET_SOLUTION" not in corpus_text                # solution never indexed
     kinds = stats["corpus_kinds"]
-    assert kinds["lecture"] == 1 and kinds["hint"] > 0 and kinds["question_fallback"] > 0
+    assert kinds == {"lecture": 1, "hint": kinds["hint"]} and kinds["hint"] > 0
+    docs = [json.loads(l) for l in corpus_text.splitlines()]
+    assert all(d["doc_id"].startswith(("sqa-lecture-", "sqa-hint-")) for d in docs)
     q, _ = load_benchmark("scienceqa", n=100, data_dir=out)
     assert any(x.image_path and Path(x.image_path).exists() for x in q)
 

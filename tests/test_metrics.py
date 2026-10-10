@@ -92,6 +92,18 @@ def test_parse_choice_prefers_longer_option_names():
     assert metrics.parse_choice("a sea lion", choices) == 1
 
 
+def test_parse_choice_keeps_option_letters_in_option_text():
+    choices = ["sample A", "sample B", "neither; the samples have the same temperature"]
+    assert metrics.parse_choice("sample B", choices) == 1
+    assert metrics.parse_choice("A. sample A", choices) == 0
+    # an unfinished explanation that names no option is not an answer
+    assert metrics.parse_choice(
+        "To compare the particles in each sample and determine which sample has the "
+        "higher temperature, we need to analyze", choices) is None
+    leaf = ["It eats leaves.", "It can carry a piece of a leaf."]
+    assert metrics.parse_choice("It can carry a piece of leaf", leaf) == 1
+
+
 def test_outcome_match_dispatch():
     meta = {"choices": _CHOICES, "answer_index": 1}
     assert metrics.outcome_match("B", ["mammal"], "scienceqa", meta) == 1.0

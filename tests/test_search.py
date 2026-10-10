@@ -314,6 +314,17 @@ def test_clean_answer():
     assert len(clean_answer("word " * 100).split()) == 24
 
 
+def test_keyword_query_drops_choice_labels():
+    from evidencetree.mcts.proposer import keyword_query
+
+    assert keyword_query("In which city is the Eiffel Tower located?") == "city Eiffel Tower"
+    question = ("What kind of sentence is this?\nMackenzie gave me flowers.\n"
+                "Choices: A. declarative; B. exclamatory")
+    assert keyword_query(question) == "kind sentence this Mackenzie gave me flowers declarative exclamatory"
+    assert keyword_query("Who wrote this? Choices: A. J. K. Rowling; B. C. S. Lewis") == \
+        "wrote this J K Rowling C S Lewis"
+
+
 def test_llm_proposer_drafts_short_answers_with_its_own_prompt():
     class RecordingGenerator:
         def __init__(self):

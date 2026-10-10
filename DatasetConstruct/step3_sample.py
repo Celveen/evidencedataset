@@ -11,8 +11,9 @@ Applies every drop rule that needs no paid call BEFORE anything is paid for:
 
 then samples sibling groups (all kept actions from one state) under the budget
 ``sampling.budget`` (or ``sampling.budget_per_query`` x the number of queries),
-round-robin over queries. Only the sampled nodes reach the support judge
-(step 4) and the rationale model (step 5).
+round-robin over queries, with each query's first group rotated over the
+decision depths (``sampling.depth_cycle``). Only the sampled nodes reach the
+support judge (step 4) and the rationale model (step 5).
 
 The output is deterministic; an existing output is kept unless --force (so the
 paid steps downstream never see the sample set change under them).
@@ -70,6 +71,7 @@ def run(cfg: dict[str, Any], mock: bool = False, force: bool = False) -> Path:
     selected, report = sample_groups(
         nodes, budget=budget, max_per_query=int(max_per_query),
         seed=int(s.get("seed", cfg.get("data", {}).get("seed", 0))),
+        depth_cycle=int(s.get("depth_cycle") or 0),
     )
     write_jsonl(out, selected)
     report.update({

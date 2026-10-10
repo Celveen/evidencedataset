@@ -292,9 +292,9 @@ def test_deferred_support_then_judge_only_correct_answers():
             super().__init__(backend="lexical")
             self.calls = 0
 
-        def classify(self, **kw):
+        def judge(self, **kw):
             self.calls += 1
-            return super().classify(**kw)
+            return super().judge(**kw)
 
     samples = label_steps(_two_answer_trajs(), verifier=GroundingVerifier(), defer_support=True)
     answers = [s for s in samples if s["action"]["type"] == "answer"]
@@ -308,6 +308,32 @@ def test_deferred_support_then_judge_only_correct_answers():
     right = by_answer["September 7, 1963"]
     assert right["answer_support"] == pytest.approx(1.0) and right["score"] == pytest.approx(1.0)
     assert right["score_source"] == "answer_support"
+
+
+def test_api_judge_reads_the_last_line_verdict_and_keeps_the_reason():
+    class Reply:
+        def __init__(self, text):
+            self.text, self.prompts = text, []
+
+        def generate(self, prompt, docs):
+            self.prompts.append(prompt)
+            return self.text
+
+    gen = Reply("The question is grammar only; the evidence is not supported prose.\nNOT_REQUIRED")
+    judge = AnswerSupportVerifier(backend="api", generator=gen)
+    label, value, reason = judge.judge(question="Which is a compound sentence?", answer="B",
+                                       evidence_texts=["[e0] Lecture: clauses ..."])
+    assert (label, value) == ("not_required", None) and reason.startswith("The question is grammar")
+    assert gen.prompts[0].rstrip().endswith("SUPPORTED, PARTIAL, UNSUPPORTED or NOT_REQUIRED.")
+    assert judge.classify(question="q", answer="a", evidence_texts=["[e0] x"]) == ("not_required", None)
+    gen.text = "SUPPORTED, the passage states it\nmore text without a label"
+    assert judge.judge(question="q", answer="a", evidence_texts=["[e0] x"])[0] == "unparseable"
+    samples = label_steps(_two_answer_trajs(), verifier=GroundingVerifier(), defer_support=True)
+    gen.text = "The evidence names the opening date.\nSUPPORTED"
+    done = {s["action"]["input"]: s for s in judge_answer_samples(samples, judge)
+            if s["action"]["type"] == "answer"}
+    assert done["September 7, 1963"]["answer_support_reason"] == "The evidence names the opening date."
+    assert done["1970"]["answer_support_reason"] is None          # skipped_incorrect: never judged
 
 
 def test_support_lines_keep_titles_and_images():

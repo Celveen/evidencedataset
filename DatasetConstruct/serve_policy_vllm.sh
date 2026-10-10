@@ -16,7 +16,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$HERE/site.env" ] && . "$HERE/site.env"
+# site.env supplies defaults; a variable set on the command line wins.
+if [ -f "$HERE/site.env" ]; then
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    if [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key+x}" ]; then export "$key=$value"; fi
+  done < "$HERE/site.env"
+fi
 
 WEIGHTS_DIR="${WEIGHTS_DIR:-$HERE/../models}"
 MODEL_DIR="${MODEL_DIR:-$WEIGHTS_DIR/Qwen2.5-VL-7B-Instruct}"
@@ -27,6 +32,8 @@ MAX_LEN="${MAX_LEN:-16384}"
 MEM="${GPU_MEM:-0.85}"
 DEFAULT_LIMIT_MM='{"image": 5}'              # query image + up to 4 retrieved images
 LIMIT_MM="${LIMIT_MM:-$DEFAULT_LIMIT_MM}"
+DEFAULT_MM_KWARGS='{"max_pixels": 1003520}'  # <= 1280 visual tokens per image; caps the
+MM_KWARGS="${MM_KWARGS:-$DEFAULT_MM_KWARGS}"    # profiling peak on 24 GB cards
 IMAGE="${VLLM_IMAGE:-vllm/vllm-openai:v0.11.2}"
 
 for g in ${RESERVED_GPUS//,/ }; do
@@ -42,7 +49,7 @@ for gpu in "${ids[@]}"; do
     --gpus "\"device=${gpu}\"" --ipc=host \
     -p "127.0.0.1:${port}:8000" \
     -v "${MODEL_DIR}:/model:ro" \
-    -e NAME="$NAME" -e MAX_LEN="$MAX_LEN" -e MEM="$MEM" -e LIMIT_MM="$LIMIT_MM" \
+    -e NAME="$NAME" -e MAX_LEN="$MAX_LEN" -e MEM="$MEM" -e LIMIT_MM="$LIMIT_MM" -e MM_KWARGS="$MM_KWARGS" \
     -e API_KEY="${LOCAL_QWEN_API_KEY:-local}" \
     --entrypoint bash "$IMAGE" -c '
       f=$(python3 -c "import transformers.tokenization_utils_base as t; print(t.__file__)")
@@ -50,6 +57,7 @@ for gpu in "${ids[@]}"; do
       exec python3 -m vllm.entrypoints.openai.api_server --model /model \
         --served-model-name "$NAME" --max-model-len "$MAX_LEN" \
         --gpu-memory-utilization "$MEM" --limit-mm-per-prompt "$LIMIT_MM" \
+        --mm-processor-kwargs "$MM_KWARGS" \
         --host 0.0.0.0 --port 8000 --api-key "$API_KEY"' >/dev/null
   echo "GPU $gpu -> http://127.0.0.1:${port}/v1 (etbench_policy_gpu${gpu})"
   port=$((port + 1))

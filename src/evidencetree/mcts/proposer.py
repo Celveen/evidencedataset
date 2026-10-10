@@ -179,12 +179,18 @@ _STOPWORDS = {
     "can", "be", "found", "located", "does", "do", "did",
 }
 _TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
+# Option labels of multiple-choice questions ("Choices: A. x; B. y", the
+# ScienceQA format of data_prep/prepare_scienceqa.py): the option texts are
+# search terms, the labels are not.
+_CHOICE_LABEL_RE = re.compile(r"(?:^|;)\s*[A-Z]\.\s")
 
 
 def keyword_query(question: str) -> str:
-    """Strip stopwords: 'In which city is the Eiffel Tower located?' ->
-    'city Eiffel Tower'."""
-    tokens = [t for t in _TOKEN_RE.findall(question) if t.lower() not in _STOPWORDS]
+    """Strip stopwords and option labels: 'In which city is the Eiffel Tower
+    located?' -> 'city Eiffel Tower'; '...\\nChoices: A. x; B. y' keeps x, y."""
+    stem, has_choices, choices = question.partition("Choices:")
+    text = f"{stem} {_CHOICE_LABEL_RE.sub(' ', choices)}" if has_choices else question
+    tokens = [t for t in _TOKEN_RE.findall(text) if t.lower() not in _STOPWORDS]
     return " ".join(tokens)
 
 

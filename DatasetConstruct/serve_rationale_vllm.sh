@@ -20,7 +20,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$HERE/site.env" ] && . "$HERE/site.env"
+# site.env supplies defaults; a variable set on the command line wins.
+if [ -f "$HERE/site.env" ]; then
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    if [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key+x}" ]; then export "$key=$value"; fi
+  done < "$HERE/site.env"
+fi
 
 WEIGHTS_DIR="${WEIGHTS_DIR:-$HERE/../models}"
 MODEL_DIR="${MODEL_DIR:-$WEIGHTS_DIR/Qwen3-Coder-30B-A3B-Instruct}"

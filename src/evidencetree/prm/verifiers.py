@@ -289,7 +289,7 @@ own image):
 
 Proposed final answer: {answer}
 
-Classify how this answer relates to the evidence. Reply with exactly one word:
+Classify how this answer relates to the evidence:
 
 - SUPPORTED: the evidence explicitly contains or entails the answer. For a
   multiple-choice answer it is enough that the evidence entails the CONTENT of
@@ -300,11 +300,45 @@ Classify how this answer relates to the evidence. Reply with exactly one word:
   of it unconfirmed.
 - UNSUPPORTED: the answer relies on external factual knowledge (entity facts,
   numbers, dates, names, statistics) that the evidence does not contain.
-- NOT_REQUIRED: the answer is derivable from the question text and the visible
-  image content alone, by perception, logic, or everyday commonsense — no
-  external factual knowledge is needed. Do NOT use this for fine-grained
-  entity facts (species data, dates, measurements, biographies): those always
-  require evidence."""
+- NOT_REQUIRED: the question can be answered from the question text, its
+  answer options and its image by reasoning or perception alone — grammar,
+  logic, arithmetic, reading a given passage, sentence or diagram, comparing
+  the options, or everyday commonsense — so no retrieved knowledge is needed.
+  You cannot see the image: judge from what the question asks. Do NOT use this
+  for facts about specific entities (capitals, species data, dates,
+  measurements, biographies): those always require evidence.
+
+Give your reason in one or two sentences. Then write a last line holding only
+the label: SUPPORTED, PARTIAL, UNSUPPORTED or NOT_REQUIRED."""
+
+# Verdict words on the judge's last line. "NOT SUPPORTED" is read as UNSUPPORTED;
+# earlier lines are the judge's reason and may use these words in prose.
+_VERDICT_RE = re.compile(r"\b(NOT[_ ]REQUIRED|UNSUPPORTED|NOT SUPPORTED|PARTIAL|SUPPORTED)\b")
+_VERDICTS: dict[str, tuple[str, float | None]] = {
+    "NOT_REQUIRED": ("not_required", None),
+    "NOT REQUIRED": ("not_required", None),
+    "UNSUPPORTED": ("unsupported", 0.0),
+    "NOT SUPPORTED": ("unsupported", 0.0),
+    "PARTIAL": ("partial", 0.5),
+    "SUPPORTED": ("supported", 1.0),
+}
+
+
+def parse_support_verdict(reply: str) -> tuple[str, float | None, str]:
+    """(label, support value, reason) from a judge reply: the verdict is the
+    last verdict word on the last non-empty line; the lines before it are the
+    reason. A reply whose last line holds no verdict is ``unparseable``."""
+    lines = [ln.strip() for ln in str(reply).strip().splitlines() if ln.strip()]
+    if not lines:
+        return ("unparseable", None, "")
+    found = _VERDICT_RE.findall(lines[-1].upper())
+    if not found:
+        return ("unparseable", None, " ".join(lines))
+    label, value = _VERDICTS[found[-1]]
+    reason = " ".join(lines[:-1])
+    if not reason:  # "SUPPORTED: the evidence states ..." on a single line
+        reason = _VERDICT_RE.sub("", lines[-1], count=1).strip(" :.-*")
+    return (label, value, reason)
 
 
 class AnswerSupportVerifier:
@@ -320,11 +354,12 @@ class AnswerSupportVerifier:
     score down. Bare yes/no answers return None because containment cannot judge
     absence claims.
 
-    ``api`` backend asks a judge model for SUPPORTED/PARTIAL/UNSUPPORTED/
-    NOT_REQUIRED and maps those to 1.0/0.5/0.0/None. ``NOT_REQUIRED`` means the
-    question is answerable from the question/image alone, so evidence support
-    should not gate the answer score. ``classify`` returns the raw label for
-    diagnostics; ``score`` keeps the older float-or-None API.
+    ``api`` backend asks a judge model for a one- or two-sentence reason and
+    then SUPPORTED/PARTIAL/UNSUPPORTED/NOT_REQUIRED, mapped to 1.0/0.5/0.0/None.
+    ``NOT_REQUIRED`` means the question is answerable from the question/image
+    alone, so evidence support should not gate the answer score. ``judge``
+    returns (label, value, reason); ``classify`` drops the reason; ``score``
+    keeps the older float-or-None API.
     """
 
     def __init__(
@@ -358,11 +393,24 @@ class AnswerSupportVerifier:
         evidence_texts: Sequence[str] = (),
     ) -> tuple[str, float | None]:
         """Return (label, support value); value None = fall back to outcome."""
+        label, value, _ = self.judge(
+            question=question, answer=answer, evidence_texts=evidence_texts
+        )
+        return label, value
+
+    def judge(
+        self,
+        *,
+        question: str,
+        answer: str,
+        evidence_texts: Sequence[str] = (),
+    ) -> tuple[str, float | None, str]:
+        """Return (label, support value, the judge's reason; "" if none)."""
         texts = [t for t in evidence_texts if t]
         if not texts:
-            return ("no_evidence", 0.0)
+            return ("no_evidence", 0.0, "")
         if self.backend == "lexical":
-            return self._lexical(answer, texts)
+            return (*self._lexical(answer, texts), "")
         return self._api(question, answer, texts)
 
     def _lexical(self, answer: str, texts: Sequence[str]) -> tuple[str, float | None]:
@@ -382,7 +430,7 @@ class AnswerSupportVerifier:
         num_score = len(nums & evidence_tokens) / len(nums)
         return ("lexical", min(num_score, word_score) if words else num_score)
 
-    def _api(self, question: str, answer: str, texts: Sequence[str]) -> tuple[str, float | None]:
+    def _api(self, question: str, answer: str, texts: Sequence[str]) -> tuple[str, float | None, str]:
         evidence = "\n".join(
             f"- {t if len(t) <= self.max_line_chars else t[:self.max_line_chars] + ' …'}"
             for t in texts
@@ -391,18 +439,10 @@ class AnswerSupportVerifier:
             question=question, evidence=evidence, answer=answer
         )
         try:
-            reply = self.generator.generate(prompt, []).strip().upper()
+            reply = self.generator.generate(prompt, [])
         except Exception:  # noqa: BLE001 - keep large batches resumable
-            return ("unparseable", None)
-        if "NOT_REQUIRED" in reply or "NOT REQUIRED" in reply:
-            return ("not_required", None)
-        if "UNSUPPORTED" in reply:
-            return ("unsupported", 0.0)
-        if "PARTIAL" in reply:
-            return ("partial", 0.5)
-        if "SUPPORTED" in reply:
-            return ("supported", 1.0)
-        return ("unparseable", None)
+            return ("unparseable", None, "")
+        return parse_support_verdict(reply)
 
 
 class GroundingVerifier:

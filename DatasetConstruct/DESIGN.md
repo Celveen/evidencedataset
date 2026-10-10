@@ -186,6 +186,12 @@ unless `--force`, so the paid steps never see their input change.
    `max_per_query` per query. Within a query, groups are taken most
    informative first: has a contrast (≥ 2 children), larger label spread, more
    reliable credit (more trajectories through the least-visited child).
+5. Rotate depths. Deep groups rest on one trajectory each, so their credit is
+   0/1 and their spread wide; ranked by spread alone, the first pilot drew 83%
+   of its sample from depth 1 and 4% from root decisions. The first group of
+   query *i* (in the seeded query order) is therefore its best contrast group
+   at depth *i* mod 3 (`sampling.depth_cycle`, when the query has one), so the
+   sample covers every decision depth; later groups follow the order above.
 
 ### 5.4 Step 4 — answer-support gate (Eq. 6)
 
@@ -195,6 +201,19 @@ wrong answers are skipped (`skipped_incorrect`, score 0 either way). The judge
 sees the evidence with page titles, and image hits as `[image] <title>`, and is
 told it cannot see the question image. Correct-but-unsupported answers are
 kept and flagged as DPO rejected sides.
+
+The judge writes a one- or two-sentence reason, then the verdict alone on the
+last line; the verdict is read from that line and the reason is stored as
+`answer_support_reason` for audits. In the first pilot a one-word verdict from
+the local Qwen3-Coder never used NOT_REQUIRED (0 of 89 judged answers) and
+called evidence that had nothing to do with the answer SUPPORTED (about 9 of
+56). With the reason first and NOT_REQUIRED spelled out — answerable from the
+question, its options and its image by grammar, logic, arithmetic, reading a
+given passage or diagram, comparing the options or everyday commonsense; never
+for entity facts — reasoning questions get NOT_REQUIRED as the paper intends
+(App. H, Case 3) and SUPPORTED becomes stricter. This departs from the
+one-word prompt printed in the paper's Appendix D; the four verdicts and their
+mapping are unchanged.
 
 ### 5.5 Step 5 — rationales
 
@@ -263,7 +282,9 @@ successful further search from the same state).
 * **Grounding bands.** `grounding_detail.raw_cos` holds every winning cosine
   by modality. Set `text_cos_lo/hi` and `image_cos_lo/hi` to roughly the 5th
   and 95th percentiles of the pilot distribution (per modality), rerun step 2
-  with `--force` (free), then steps 3+.
+  with `--force` (free), then steps 3+. Bands differ by corpus, so they live in
+  the benchmark config: ScienceQA uses text [0.67, 0.945] (pilot, 2026-10-09;
+  the shared [0.5, 0.9] put the median at 0.79 and clipped the top 15%).
 * **Gap threshold.** Check what 0.7 removes; the rule should catch
   contradictions, not a whole action type.
 * **Support judge.** Read 50 judged answers from the audit sheet; confirm
@@ -366,6 +387,13 @@ Decided here (change in config if needed):
 * No ETBench-Open test split; the benchmark evaluation sets are held out.
 * Marginal gain = g × (1 − redundancy of the best result), recorded only.
 * InfoSeek chunks: ~1,000 characters, at most 40 per entity page.
+* ScienceQA corpus: lectures and hints only, no question-text documents for
+  questions that have neither. The paper's leakage audit (App. E) says the
+  corpus falls back to the question text; the pilot showed such copies score
+  near 1.0 grounding while carrying no information, so they were removed —
+  the paper's sentence needs the same update.
+* Support judge: reason first, verdict on the last line (§5.4).
+* Sampling: each query's first group rotates over depths 0–2 (§5.3).
 * GQA seeds: one question per image; corpus = all train-balanced images with a
   scene graph.
 

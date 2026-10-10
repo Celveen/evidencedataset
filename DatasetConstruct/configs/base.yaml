@@ -75,8 +75,8 @@ verifier:                        # step 2 grounding (paper Eq. 3)
       model: deepseek-v4-pro
       base_url: https://api.deepseek.com/v1
       api_key_env: DEEPSEEK_API_KEY
-      system_prompt: You are a strict evidence-support judge. Reply with exactly one word.
-      max_new_tokens: 8
+      system_prompt: You are a strict evidence-support judge.
+      max_new_tokens: 160          # a one- or two-sentence reason, then the label line
       temperature: 0.0
       timeout: 60
       extra_body:                # reasoning models: thinking tokens would eat the budget
@@ -131,6 +131,8 @@ quality:
 sampling:                        # step 3
   budget_per_query: 3            # sampled nodes = 3 x seed queries (paper: 60K from 20K)
   max_per_query: 9
+  depth_cycle: 3                 # rotate each query's first sibling group over depths 0..2
+                                 # (DESIGN §5.3); 0 = most-informative first only
   seed: 0
 
 pairs:                           # step 6 same-state preference pairs

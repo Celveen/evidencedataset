@@ -1,0 +1,34 @@
+{
+  "spec": {
+    "eval_n": 2000,
+    "seed_n": 20000,
+    "eval_strata": null,
+    "group_by": null,
+    "entity_field": null,
+    "entity_disjoint_strata": [],
+    "max_seeds_per_group": null,
+    "seed_backup": 0,
+    "salt": "etbench-open-v1:scienceqa"
+  },
+  "n_records": 21208,
+  "pools": {
+    "seed": 16967,
+    "eval": 4241
+  },
+  "eval": {
+    "n": 2000,
+    "groups": 2000,
+    "per_stratum": {
+      "all": 2000
+    },
+    "quotas": {
+      "all": 2000
+    }
+  },
+  "excluded_entities": 0,
+  "seed_pool_after_exclusion": 16967,
+  "seed_dropped": {},
+  "seeds": 16967,
+  "seed_shortfall": 3033,
+  "backup_seeds": 0
+}

@@ -103,11 +103,13 @@ def finalize_answer(
     support: float | None,
     floor: float = 0.3,
     unsupported_threshold: float = 0.3,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Write the answer-support fields and the final score into ``sample``."""
     outcome = float(sample["outcome_credit"])
     sample["answer_support"] = support
     sample["answer_support_label"] = support_label
+    sample["answer_support_reason"] = reason or None
     sample["support_floor"] = floor
     sample["score"] = fuse_answer_score(outcome, support, floor)
     sample["unsupported_correct"] = bool(
@@ -305,6 +307,7 @@ def iter_label_steps(
                     "alpha": alpha,
                     "answer_support": None,
                     "answer_support_label": None,
+                    "answer_support_reason": None,
                     "support_floor": support_floor,
                     "unsupported_correct": False,
                     "gold_answers": traj.get("gold_answers", []),
@@ -374,10 +377,10 @@ def judge_answer_samples(
     concurrency = max(1, int(concurrency))
     max_pending = max(1, int(max_pending or concurrency * 4))
     executor = ThreadPoolExecutor(max_workers=concurrency) if concurrency > 1 else None
-    pending: dict[Future[tuple[str, float | None]], dict[str, Any]] = {}
+    pending: dict[Future[tuple[str, float | None, str]], dict[str, Any]] = {}
 
-    def _judge(sample: dict[str, Any]) -> tuple[str, float | None]:
-        return support_verifier.classify(
+    def _judge(sample: dict[str, Any]) -> tuple[str, float | None, str]:
+        return support_verifier.judge(
             question=sample["question"],
             answer=sample["action"]["input"],
             evidence_texts=support_evidence_lines(sample["state"]["evidence_before"]),
@@ -393,10 +396,10 @@ def judge_answer_samples(
         for future in done:
             sample = pending.pop(future)
             try:
-                label, support = future.result()
+                label, support, reason = future.result()
             except Exception:  # noqa: BLE001 - keep long jobs resumable
-                label, support = ("unparseable", None)
-            out.append(finalize_answer(sample, label, support, floor, unsupported_threshold))
+                label, support, reason = ("unparseable", None, "")
+            out.append(finalize_answer(sample, label, support, floor, unsupported_threshold, reason))
         return out
 
     try:
@@ -411,8 +414,8 @@ def judge_answer_samples(
                 yield finalize_answer(sample, SKIPPED_INCORRECT, None, floor, unsupported_threshold)
                 continue
             if executor is None:
-                label, support = _judge(sample)
-                yield finalize_answer(sample, label, support, floor, unsupported_threshold)
+                label, support, reason = _judge(sample)
+                yield finalize_answer(sample, label, support, floor, unsupported_threshold, reason)
                 continue
             while len(pending) >= max_pending:
                 yield from _drain(block=True)

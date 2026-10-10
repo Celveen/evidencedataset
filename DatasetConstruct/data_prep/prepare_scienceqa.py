@@ -9,13 +9,15 @@ Splits (leakage by construction is impossible across benchmark splits):
                 than --seed-n)
     evaluation  a fixed sample of --eval-n questions from test
 
-Corpus (paper Appendix E): the benchmark's ``lecture`` and ``hint`` fields
-only — never ``solution``, which explains the gold answer. Lectures are
+Corpus (paper §4, Appendix E): the benchmark's ``lecture`` and ``hint``
+fields only — never ``solution``, which explains the gold answer. Lectures are
 deduplicated (many questions share one lecture); each non-empty hint is one
 document whose title names its question, so retrieval can reach the context
-that belongs to a question; a question with neither field falls back to a
-document holding its question text. Questions are posed WITHOUT their hint:
-the context has to be retrieved.
+that belongs to a question. Questions with neither field get no document: a
+copy of a question carries no information, yet CLIP grounding scores it near
+1.0 against the same question (first pilot), so it would reward empty
+retrievals. Questions are posed WITHOUT their hint: the context has to be
+retrieved.
 
 Outputs (image paths relative to --out):
     data/corpus/scienceqa/{queries,eval_queries,corpus}.jsonl, images/, stats.json
@@ -144,10 +146,6 @@ def run(src: Path, out: Path, splits_dir: Path, eval_n: int = 2000, seed_n: int 
             corpus.append({"doc_id": f"sqa-hint-{qid}", "title": f"Context: {r['question'].strip()[:120]}",
                            "text": hint, "entity_id": f"sqa-hint-{qid}"})
             kinds["hint"] += 1
-        if not lecture and not hint:
-            corpus.append({"doc_id": f"sqa-question-{qid}", "title": "Question",
-                           "text": r["question"].strip(), "entity_id": f"sqa-question-{qid}"})
-            kinds["question_fallback"] += 1
     n_docs = write_jsonl(out / "corpus.jsonl", corpus)
 
     write_ids(splits_dir / "seed_ids.txt", result.seed_ids)

@@ -10,3 +10,11 @@ data:
   data_dir: data/corpus/scienceqa
   seed_ids: DatasetConstruct/splits/scienceqa/seed_ids.txt
   eval_ids: DatasetConstruct/splits/scienceqa/eval_ids.txt
+
+verifier:
+  # Grounding bands refit from the 100-seed pilot (2026-10-09; DESIGN §7): ~5th and
+  # 95th percentiles of the winning question-result cosines (all results are text
+  # here — the corpus has no images). The shared [0.5, 0.9] band put the median at
+  # 0.79 and clipped the top 15% to 1.
+  text_cos_lo: 0.67
+  text_cos_hi: 0.945

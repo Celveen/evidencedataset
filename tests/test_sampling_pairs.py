@@ -67,6 +67,24 @@ def test_sampling_respects_per_query_cap_and_budget():
     assert len(selected) == 3
 
 
+def test_depth_cycle_rotates_the_first_group_over_depths():
+    nodes = []
+    for q in range(9):
+        qid = f"q{q}"
+        # root group: small spread, reliable credit; deeper groups: wide 0/1 spread
+        nodes += [_node(qid, "root", f"{qid}r1", "text_search", 0.6, depth=0, n=3),
+                  _node(qid, "root", f"{qid}r2", "image_search", 0.5, depth=0, n=3)]
+        nodes += [_node(qid, "s1", f"{qid}d1", "answer", 1.0, depth=1),
+                  _node(qid, "s1", f"{qid}d2", "answer", 0.0, depth=1)]
+        nodes += [_node(qid, "s2", f"{qid}e1", "text_search", 0.9, depth=2),
+                  _node(qid, "s2", f"{qid}e2", "answer", 0.1, depth=2)]
+    plain, report = sample_groups(nodes, budget=18, max_per_query=2)
+    assert report["depths_selected"] == {1: 18}                   # spread first: all depth 1
+    rotated, report = sample_groups(nodes, budget=18, max_per_query=2, depth_cycle=3)
+    assert report["depths_selected"] == {0: 6, 1: 6, 2: 6} and report["depth_cycle"] == 3
+    assert report["queries_covered"] == 9
+
+
 def test_pairs_types_and_margin():
     parent = "s"
     good_text = _node("q", parent, "t", "text_search", 0.9, outcome=0.8)

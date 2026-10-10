@@ -42,6 +42,7 @@ per line. Each benchmark is built separately (`<dataset_dir>/<benchmark>/`).
 | `alpha` | float | no | `[0,1]` | dual-source fusion weight |
 | `answer_support` | float \| null | yes | `[0,1]`; numeric only on answer steps | whether the answer is backed by accumulated evidence (null = not judged) |
 | `answer_support_label` | str \| null | yes | `supported` \| `partial` \| `unsupported` \| `not_required` \| `lexical` \| `no_evidence` \| `unverifiable` \| `unparseable` \| `skipped_incorrect` | raw judge label, kept for diagnostics; `skipped_incorrect` = wrong answer, not sent to the judge (its score is 0 regardless) |
+| `answer_support_reason` | str \| null | yes | — | the judge's one- or two-sentence reason for `answer_support_label`; null when the answer was not sent to an LLM judge |
 | `support_floor` | float | no | `[0,1]`, default 0.3 | answer-step fusion floor (see `score`) |
 | `unsupported_correct` | bool | no | — | answer step with `outcome >= 0.5` and `support <= unsupported_threshold`: a parametric lucky guess. **Not dropped** — retained as a DPO negative |
 | `gold_answers` | list | no | see §1.2 | reference answers, for leakage checks and analysis; not part of the PRM input |

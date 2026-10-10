@@ -15,7 +15,12 @@ rationale per copy would waste most of the budget. This module:
    contrasts DPO needs. Within a query, groups are taken most-informative
    first: groups with a contrast (>= 2 children), then larger label spread,
    then more reliable credit (more trajectories through the least-visited
-   child).
+   child). That order alone favours deep groups — their credit rests on one
+   trajectory, so it is 0/1 and spreads widely — and in the first pilot left
+   root decisions at 4% of the sample. ``depth_cycle`` therefore rotates the
+   depth of each query's FIRST group along the seeded query order (query i
+   starts with its best contrast group at depth i mod depth_cycle, if it has
+   one), so every decision depth is represented.
 
 Everything is deterministic given the seed; answer scores are still the
 provisional outcome-only values here (the support judge runs after sampling).
@@ -87,11 +92,16 @@ def _priority(group: list[dict[str, Any]]) -> tuple[int, float, int]:
     return (int(len(group) >= 2), round(spread, 6), reliability)
 
 
+def _depth(group: list[dict[str, Any]]) -> int:
+    return int(group[0].get("depth") or 0)
+
+
 def sample_groups(
     nodes: list[dict[str, Any]],
     budget: int,
     max_per_query: int | None = None,
     seed: int = 0,
+    depth_cycle: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Budgeted, query-balanced sampling of sibling groups.
 
@@ -100,6 +110,8 @@ def sample_groups(
         budget: target number of nodes; the last group may overshoot it.
         max_per_query: cap on nodes per query (None = no cap).
         seed: fixes the round-robin order of queries.
+        depth_cycle: rotate the depth of each query's first group over
+            0..depth_cycle-1 (see the module docstring); None or 0 = off.
 
     Returns:
         (selected nodes ordered by query then parent state, report dict).
@@ -113,6 +125,13 @@ def sample_groups(
 
     salt = f"sampling:{seed}"
     order = sorted(by_query, key=lambda q: (stable_rank(q, salt), q))
+    if depth_cycle:
+        for i, qid in enumerate(order):
+            queue = by_query[qid]
+            want = i % int(depth_cycle)
+            first = next((k for k, g in enumerate(queue) if len(g) >= 2 and _depth(g) == want), None)
+            if first:
+                queue.insert(0, queue.pop(first))
     cursor = Counter()
     taken = Counter()
     chosen: dict[str, list[list[dict[str, Any]]]] = defaultdict(list)
@@ -151,5 +170,7 @@ def sample_groups(
         "queries_covered": len(chosen),
         "action_types_in": dict(Counter(n["action"]["type"] for n in nodes)),
         "action_types_selected": dict(Counter(n["action"]["type"] for n in selected)),
+        "depth_cycle": int(depth_cycle or 0),
+        "depths_selected": dict(sorted(Counter(int(n.get("depth") or 0) for n in selected).items())),
     }
     return selected, report

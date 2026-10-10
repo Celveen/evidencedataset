@@ -176,19 +176,17 @@ _ANSWER_PREFIX_RE = re.compile(
 )
 
 
-def parse_choice(prediction: str, choices: Sequence[str]) -> int | None:
-    """Resolve a free-form prediction to an option index, or None.
+def _option_norm(text: str) -> str:
+    """:func:`normalize_answer` for option texts, but only a LEADING article is
+    dropped: in "sample A" or "Solution B" the trailing letter names the option,
+    and removing it as an article would leave "sample", which any answer that
+    mentions a sample would then match."""
+    s = " ".join("".join(ch for ch in text.lower() if ch not in string.punctuation).split())
+    return re.sub(r"^(?:a|an|the)\s+", "", s)
 
-    Accepted forms: the option text ("mammal"), the option letter ("B",
-    "(B)", "B."), both ("B. mammal"), or a sentence naming exactly one option
-    ("the answer is mammal"). A letter that contradicts the option text that
-    follows it, or a sentence naming several options, is ambiguous -> None.
-    """
-    if not choices:
-        return None
-    text = _ANSWER_PREFIX_RE.sub("", str(prediction).strip())
-    norm_choices = [normalize_answer(str(c)) for c in choices]
-    norm_pred = normalize_answer(text)
+
+def _resolve_choice(text: str, norm_choices: list[str], norm) -> int | None:
+    norm_pred = norm(text)
     if norm_pred:
         exact = [i for i, c in enumerate(norm_choices) if c == norm_pred]
         if len(exact) == 1:
@@ -197,8 +195,8 @@ def parse_choice(prediction: str, choices: Sequence[str]) -> int | None:
     m = _LEADING_LETTER_RE.match(text)
     if m:
         index = ord(m.group(1).upper()) - ord("A")
-        if 0 <= index < len(choices):
-            rest = normalize_answer(text[m.end():])
+        if 0 <= index < len(norm_choices):
+            rest = norm(text[m.end():])
             if not rest or rest == norm_choices[index]:
                 return index
             named = [i for i, c in enumerate(norm_choices) if c and c == rest]
@@ -216,6 +214,36 @@ def parse_choice(prediction: str, choices: Sequence[str]) -> int | None:
         if not any(j != i and norm_choices[i] in norm_choices[j] for j in mentioned)
     ]
     return mentioned[0] if len(mentioned) == 1 else None
+
+
+def _nested(texts: list[str]) -> bool:
+    return any(a in b for i, a in enumerate(texts) for j, b in enumerate(texts) if i != j)
+
+
+def parse_choice(prediction: str, choices: Sequence[str]) -> int | None:
+    """Resolve a free-form prediction to an option index, or None.
+
+    Accepted forms: the option text ("mammal"), the option letter ("B",
+    "(B)", "B."), both ("B. mammal"), or a sentence naming exactly one option
+    ("the answer is mammal"). A letter that contradicts the option text that
+    follows it, or a sentence naming several options, is ambiguous -> None.
+
+    Option texts are compared with :func:`_option_norm` first; the SQuAD
+    normalization (articles dropped anywhere, so "a piece of leaf" still
+    matches "a piece of a leaf") is tried only when it does not make one
+    option a substring of another.
+    """
+    if not choices:
+        return None
+    text = _ANSWER_PREFIX_RE.sub("", str(prediction).strip())
+    strict = [_option_norm(str(c)) for c in choices]
+    found = _resolve_choice(text, strict, _option_norm)
+    if found is not None:
+        return found
+    loose = [normalize_answer(str(c)) for c in choices]
+    if _nested(loose) and not _nested(strict):
+        return None  # dropping articles made options collide ("sample A" -> "sample")
+    return _resolve_choice(text, loose, normalize_answer)
 
 
 def multiple_choice_match(
