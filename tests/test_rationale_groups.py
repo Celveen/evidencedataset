@@ -121,4 +121,4 @@ def test_apply_provider_swaps_endpoint_keys_only():
     with pytest.raises(FileNotFoundError, match="available"):
         apply_provider(cfg, "rationale", "no_such_provider")
     assert {"kimi_code", "kimi_code_anthropic", "moonshot", "deepseek",
-            "local_qwen3_coder"} <= set(provider_names())
+            "local_qwen3_coder", "local_qwen3_instruct"} <= set(provider_names())

@@ -339,7 +339,7 @@ an existing sample, and `--force` would also discard step 1's rollouts.
 
 **Endpoint presets.** `configs/providers/*.yaml` hold ready endpoint blocks
 (`kimi_code`, `kimi_code_anthropic`, `moonshot`, `deepseek`,
-`local_qwen3_coder`). `--provider NAME` (steps 4/5, `try_rationale_model.py`) or
+`local_qwen3_coder`, `local_qwen3_instruct`). `--provider NAME` (steps 4/5, `try_rationale_model.py`) or
 `--rationale-provider` / `--judge-provider` (`run_pipeline.py`, `preflight.py`)
 swap only the endpoint keys (provider, model, base_url, api_key_env,
 extra_body) and keep the prompt and sampling settings. For Kimi Code: put

@@ -7,10 +7,18 @@
 # Usage (from the repository root):
 #   bash DatasetConstruct/data_prep/download_assets.sh            # everything
 #   bash DatasetConstruct/data_prep/download_assets.sh models     # one group
+#   bash DatasetConstruct/data_prep/download_assets.sh judge      # optional, not in "all":
+#        Qwen3-30B-A3B-Instruct-2507 (~57 GB) as the local step-4/5 model
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$HERE/../site.env" ] && . "$HERE/../site.env"   # WEIGHTS_DIR (see site.env.example)
+# site.env supplies defaults (WEIGHTS_DIR, see site.env.example); a variable set
+# on the command line wins.
+if [ -f "$HERE/../site.env" ]; then
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    if [[ $key =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && [ -z "${!key+x}" ]; then export "$key=$value"; fi
+  done < "$HERE/../site.env"
+fi
 WEIGHTS_DIR="${WEIGHTS_DIR:-models}"           # datasets always go to data/raw
 NOPROXY=(env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u all_proxy)
 WHAT="${1:-all}"
@@ -25,6 +33,10 @@ ms() { "${NOPROXY[@]}" modelscope download "$@"; }
 if [[ "$WHAT" == all || "$WHAT" == models ]]; then
   ms --model Qwen/Qwen2.5-VL-7B-Instruct --local_dir "$WEIGHTS_DIR/Qwen2.5-VL-7B-Instruct"   # ~16 GB
   ms --model sentence-transformers/clip-ViT-B-32 --local_dir "$WEIGHTS_DIR/clip-ViT-B-32"     # ~0.6 GB
+fi
+
+if [[ "$WHAT" == judge ]]; then
+  ms --model Qwen/Qwen3-30B-A3B-Instruct-2507 --local_dir "$WEIGHTS_DIR/Qwen3-30B-A3B-Instruct-2507"  # ~57 GB
 fi
 
 if [[ "$WHAT" == all || "$WHAT" == gqa ]]; then

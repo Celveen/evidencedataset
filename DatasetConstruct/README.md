@@ -95,7 +95,7 @@ OpenAI-compatible endpoint, `anthropic` for Claude), `model`, `base_url` and
 `api_key_env` (the name of the variable holding the key).
 
 Ready endpoint blocks live in `configs/providers/` (`kimi_code`,
-`kimi_code_anthropic`, `moonshot`, `deepseek`, `local_qwen3_coder`); select one with
+`kimi_code_anthropic`, `moonshot`, `deepseek`, `local_qwen3_coder`, `local_qwen3_instruct`); select one with
 `--provider` (steps 4/5, `try_rationale_model.py`) or `--rationale-provider` /
 `--judge-provider` (`run_pipeline.py`, `preflight.py`) instead of editing `base.yaml`.
 
