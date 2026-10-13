@@ -379,10 +379,13 @@ class LLMProposer:
         fallback: HeuristicProposer | None = None,
         enable_image_search: bool = True,
         freeze_action_queries: bool = False,
+        answer_generator: Generator | None = None,
     ) -> None:
         self.generator = generator
         self.enable_image_search = enable_image_search
         self.freeze_action_queries = freeze_action_queries
+        # Drafts answer text (propose_answer); defaults to the policy generator.
+        self.answer_generator = answer_generator or generator
         self.fallback = fallback or HeuristicProposer(
             generator,
             enable_image_actions=enable_image_search,
@@ -431,6 +434,17 @@ class LLMProposer:
             # also proposed retrieval; if it proposed only an answer, fall
             # back to the retrieval-first heuristic below.
             actions = [a for a in actions if not isinstance(a, AnswerAction)]
+        answer_at = next(
+            (i for i, a in enumerate(actions) if isinstance(a, AnswerAction)), None
+        )
+        if answer_at is not None:
+            # The policy decides WHEN to answer; the answer itself is drafted
+            # once with the answer prompt (greedy under policy.answer_temperature),
+            # so a state has one answer and "answer now" is judged on it.
+            actions = [a for a in actions if not isinstance(a, AnswerAction)]
+            drafted = self.propose_answer(state)
+            if drafted.text:
+                actions.insert(answer_at, drafted)
         taken = set(state.actions_taken)
         image_action = ImageSearchAction()
         if (
@@ -467,7 +481,7 @@ class LLMProposer:
             question=state.question,
             evidence="\n".join(state.evidence_texts()) or "(none)",
         )
-        text = self.generator.generate(
+        text = self.answer_generator.generate(
             prompt, [], image_paths=self._vision_paths(state)
         )
         return AnswerAction(text=clean_answer(text))

@@ -18,7 +18,9 @@ Config keys consumed (superset of the two former call sites):
     retriever.bm25_index_dir  on-disk BM25 cache (default <data_dir>/bm25_index)
     retriever.mock_encoders   mock runs over an image-bearing world use the
                            deterministic stand-in CLIP encoders (default true)
-    policy | generation    proposer / answer-drafting backend
+    policy | generation    proposer / answer-drafting backend;
+                           policy.answer_temperature drafts answer text with
+                           a second, low-temperature generator
     action_gate.{enabled,mode,max_actions}
     prm.scorer             outcome | overlap | visualprm (default: overlap when
                            mock, else visualprm) + prm.model_name/device;
@@ -170,11 +172,16 @@ def build_search_stack(
             },
         )
     else:
+        answer_temperature = policy_cfg.get("answer_temperature")
         proposer = LLMProposer(
             generator,
             enable_image_search=image_enabled,
             freeze_action_queries=bool(
                 policy_cfg.get("freeze_action_queries", False)
+            ),
+            answer_generator=(
+                build_generator({**policy_cfg, "temperature": float(answer_temperature)})
+                if answer_temperature is not None else None
             ),
         )
 

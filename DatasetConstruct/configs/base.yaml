@@ -36,6 +36,8 @@ policy:                          # training-free policy VLM (paper §5.1), serve
   system_prompt: You are a careful multimodal research assistant. Follow the instructions exactly.
   max_new_tokens: 256            # proposals are multi-line JSON
   temperature: 0.7               # > 0 so rollouts differ
+  answer_temperature: 0.0        # proposals (0.7) decide WHEN to answer; the answer text
+                                 # is drafted once, greedily (DESIGN §5.1)
   timeout: 120
   mock_accuracy: 0.6             # mock backend only
   mock_seed: 0

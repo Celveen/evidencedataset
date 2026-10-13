@@ -172,6 +172,13 @@ unless `--force`, so the paid steps never see their input change.
   "Answer:", no quotes, "No, because …" → "No"). In the GQA pilot the old
   prompt never mentioned yes/no: 25% of yes/no answers were something else
   ("scarf 1 blue") and 12% of all answers were sentences.
+* One answer per state: the policy's proposals (temperature 0.7, for diverse
+  trees) only decide WHEN to answer; the answer text is drafted once with the
+  answer prompt at `policy.answer_temperature` (0). Sampled answers made the
+  outcome of "answer now" partly a coin flip: drafting greedily raised
+  trajectory accuracy from 42% to 52% (GQA) and 80% to 86% (ScienceQA) in the
+  pilots and removed malformed answers. The price is fewer answer-vs-answer
+  contrasts at one state, which mostly reflected sampling noise.
 * Outcome: `metrics.outcome_match` — InfoSeek relaxed accuracy (numeric range
   for value questions), ScienceQA multiple choice (letter, option text, or
   both; contradictions rejected), GQA normalized exact match.

@@ -408,6 +408,29 @@ def test_llm_proposer_drafts_short_answers_with_its_own_prompt():
     assert "yes or no" in prompt and "OTHER images" in prompt
 
 
+def test_answers_are_drafted_once_by_the_answer_generator():
+    class Fixed:
+        def __init__(self, text):
+            self.text = text
+
+        def generate(self, prompt, docs, **kw):
+            return self.text
+
+    proposals = Fixed('{"type": "text_search", "query": "fork table"}\n'
+                      '{"type": "answer", "text": "a guess"}\n'
+                      '{"type": "answer", "text": "napkin"}')
+    state = SearchState(question="What is the fork in?").advanced(
+        TextSearchAction(query="fork"),
+        [Evidence(evidence_id="e0", step_index=0, source_action="text_search",
+                  doc_id="d", text="fork in napkin", title="t")],
+    )
+    proposer = LLMProposer(proposals, answer_generator=Fixed("Napkin."))
+    actions = proposer.propose(state, k=5)
+    assert [a.text for a in actions if isinstance(a, AnswerAction)] == ["Napkin"]   # one answer
+    assert isinstance(actions[1], AnswerAction)              # where the policy chose to answer
+    assert proposer.propose_answer(state).text == "Napkin"
+
+
 def test_heuristic_proposer_adds_title_followup():
     gen = build_generator({"backend": "mock", "mock_accuracy": 1.0, "mock_seed": 0})
     state = SearchState(question="In which city is the landmark located?").advanced(
