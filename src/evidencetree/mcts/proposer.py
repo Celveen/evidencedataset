@@ -198,6 +198,8 @@ _ANSWER_LEAD_RE = re.compile(
     r"^\s*(?:final\s+answer|answer|short\s+answer)\s*[:：-]\s*", re.IGNORECASE
 )
 _MAX_ANSWER_WORDS = 24
+# "No, based on the evidence ..." -> "No": a yes/no verdict followed by its reason.
+_YES_NO_LEAD_RE = re.compile(r"^(yes|no)\s*[,.;:!]", re.IGNORECASE)
 
 
 def clean_answer(text: str) -> str:
@@ -212,6 +214,9 @@ def clean_answer(text: str) -> str:
         return ""
     out = _ANSWER_LEAD_RE.sub("", lines[0]).strip()
     out = out.strip("*`\"' ").rstrip(".").strip()
+    yes_no = _YES_NO_LEAD_RE.match(out)
+    if yes_no:
+        return yes_no.group(1)
     words = out.split()
     if len(words) > _MAX_ANSWER_WORDS:
         out = " ".join(words[:_MAX_ANSWER_WORDS])
@@ -219,11 +224,19 @@ def clean_answer(text: str) -> str:
 
 
 def title_followup_query(state: SearchState) -> TextSearchAction | None:
-    """Attribute lookup built from the first evidence title + question keywords
-    (the disambiguate-then-look-up chain: image_search names the entity, this
-    text_search fetches the asked attribute)."""
+    """Attribute lookup built from the entity image_search matched + question
+    keywords (the disambiguate-then-look-up chain: image_search names the
+    entity, this text_search fetches the asked attribute).
+
+    Only an IMAGE hit of an image_search names the question's entity. A text
+    hit can be about any other entity (in GQA, any of 72K other images); the
+    GQA pilot followed such titles in 78 of its 162 id lookups, retrieving
+    confidently wrong scene graphs."""
     kq = keyword_query(state.question)
-    titles = [e.title for e in state.evidence if e.title]
+    titles = [
+        e.title for e in state.evidence
+        if e.title and e.source_action == "image_search" and e.result_modality != "text"
+    ]
     if not titles or not kq:
         return None
     return TextSearchAction(query=f"{titles[0]} {kq}".strip())
@@ -329,14 +342,17 @@ Rules:
   never re-issue a query already executed on this path.
 - Keep every search query faithful to the original question's intent; do not
   drift away from what is actually being asked.
+- Retrieved pages can describe OTHER images or entities than the one in the
+  question; only evidence about the question's own image or entity counts.
 - Even when you propose answer, ALSO propose the best follow-up text_search
   as a separate candidate whenever the asked attribute is not literally
   present in the evidence above.
 - Only answer when the collected evidence actually supports the answer, OR
   when the question is answerable from the image and question alone by
   perception, logic, or everyday commonsense (no external facts needed).
-- An answer "text" is ONLY the short answer: an entity name, a number with
-  its unit, a date, or the chosen option — never a sentence or explanation.
+- An answer "text" is ONLY the short answer: yes or no, an entity name, a
+  number with its unit, a date, or the chosen option — never a sentence or
+  explanation.
 {query_rule}Output ONLY the JSON lines."""
 
 _ANSWER_PROMPT = """Answer the question about the given image.
@@ -345,9 +361,13 @@ Question: {question}
 Evidence collected so far:
 {evidence}
 
-Reply with ONLY the final answer as a short phrase: an entity name, a number
-with its unit, a date, or the chosen option. Use the evidence when it contains
-the answer; otherwise give your best guess. No explanation."""
+Retrieved pages can describe OTHER images or entities than the one in the
+question: use only evidence about the question's own image or entity.
+Reply with ONLY the final answer as a short phrase, usually one to three words:
+yes or no, an object or entity name, a color, a position (left, right, top,
+bottom), a number with its unit, a date, or the chosen option. Use the evidence
+when it contains the answer; otherwise give your best guess. No explanation and
+no full sentence."""
 
 
 class LLMProposer:

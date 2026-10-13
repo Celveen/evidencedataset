@@ -44,11 +44,14 @@ def entity_key_of(doc: Document) -> str:
 
 
 def corpus_fingerprint(corpus: Sequence[Document]) -> str:
-    """Cheap identity of a corpus (size + ids), used to validate cached indexes."""
+    """Identity of a corpus (ids AND content), used to validate cached indexes:
+    a corpus rebuilt with the same doc ids but new text (e.g. GQA documents
+    switching from program fallbacks to scene graphs) must not reuse an index."""
     h = hashlib.sha256(str(len(corpus)).encode())
     for doc in corpus:
-        h.update(doc.doc_id.encode())
-        h.update(b"\x00")
+        for part in (doc.doc_id, doc.title or "", doc.text or "", str(doc.image_path or "")):
+            h.update(part.encode())
+            h.update(b"\x00")
     return h.hexdigest()[:16]
 
 
@@ -330,6 +333,7 @@ class UnifiedClipRetriever:
         self._vecs = None      # (n_units, dim) float32, L2-normalized
         self._index = None     # faiss.IndexFlatIP | None (numpy fallback)
         self._n_docs = 0
+        self.fingerprint: str | None = None   # corpus identity of a loaded index
 
     # ------------------------------------------------------------------ #
     def build(self, corpus: Sequence[Document]) -> "UnifiedClipRetriever":
@@ -443,7 +447,7 @@ class UnifiedClipRetriever:
     # Persistence (offline index caching; vectors stored as .npy so loading
     # never requires faiss)
     # ------------------------------------------------------------------ #
-    def save(self, dir_path: str | Path) -> Path:
+    def save(self, dir_path: str | Path, fingerprint: str | None = None) -> Path:
         import numpy as np
 
         if self._vecs is None:
@@ -463,6 +467,7 @@ class UnifiedClipRetriever:
                 "model_name": self.model_name,
                 "n_docs": self._n_docs,
                 "n_units": len(self._units),
+                "fingerprint": fingerprint,
             }, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -494,6 +499,7 @@ class UnifiedClipRetriever:
             ]
         meta = json.loads((dir_path / "meta.json").read_text(encoding="utf-8"))
         inst._n_docs = int(meta.get("n_docs", 0))
+        inst.fingerprint = meta.get("fingerprint")
         inst._index = inst._try_faiss(inst._vecs)
         return inst
 

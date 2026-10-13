@@ -146,10 +146,13 @@ class MCTSSearcher:
         scorer: TrajectoryScorer,
         config: SearchConfig | None = None,
         tracer=None,
+        prior_scorer: TrajectoryScorer | None = None,
     ) -> None:
         self.executor = executor
         self.proposer = proposer
         self.scorer = scorer
+        # Scores children at expansion (their prior); defaults to the reward scorer.
+        self.prior_scorer = prior_scorer or scorer
         self.cfg = config or SearchConfig()
         # Optional callable(dict) -> None for step-by-step inspection of the
         # search (selection UCT scores, expansion priors, simulation, backup).
@@ -246,7 +249,7 @@ class MCTSSearcher:
                 continue
             seen.add(action)
             child_state = self.executor.execute(node.state, action)
-            prior = float(self.scorer.score(state_to_trajectory(child_state)))
+            prior = float(self.prior_scorer.score(state_to_trajectory(child_state)))
             scored.append(MCTSNode(child_state, parent=node, action=action, prior=prior))
         scored.sort(key=lambda ch: ch.prior, reverse=True)
         if self.cfg.expansion == "diverse":

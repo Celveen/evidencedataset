@@ -143,7 +143,9 @@ action_gate:
   enabled: false
 
 prm:
-  scorer: overlap                # step-1 guidance signal only (NOT the dataset label)
+  scorer: outcome                # step-1 search guidance only, NOT the dataset label: a
+                                 # rollout scores 1 if its answer is right (gold known
+                                 # offline), priors stay neutral (DESIGN §5.1)
 
 output:
   dir: data/construction                 # <dir>/<benchmark>/<stage>.jsonl

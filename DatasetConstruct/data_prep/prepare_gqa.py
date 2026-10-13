@@ -6,19 +6,23 @@ Inputs:
                     testdev_balanced_{instructions,images}/
     --scene-graphs  the official ``sceneGraphs.zip`` (train_sceneGraphs.json);
                     fetch it on a machine with internet access with
-                    ``fetch_kit/fetch_infoseek.py gqa-scenegraphs``
+                    ``fetch_kit/fetch_infoseek.py gqa-scenegraphs``. Optional:
+                    images without a scene graph fall back to program text
 
 Splits (paper Appendix E):
     seeds       train-balanced questions, at most one per image (diversity)
     evaluation  a fixed sample of --eval-n test-dev balanced questions; test-dev
                 images are never put in the corpus
 
-Corpus: one document per train-balanced image that has a scene graph — the
-image plus its scene graph rendered as text (objects, attributes,
-relations). A train question can therefore reach its own image's scene graph
-(image_search, then a text lookup): the oracle-perception probe the paper
-uses GQA for. ``--corpus-scope seeds`` keeps only the seed images plus
-``--corpus-extra`` random others (smaller disk / faster pilots).
+Corpus: one document per train-balanced image — the image plus its scene
+graph rendered as text (objects, attributes, relations). A train question can
+therefore reach its own image's scene graph (image_search, then a text
+lookup): the oracle-perception probe the paper uses GQA for. Images without a
+scene graph (all of them when --scene-graphs is omitted) fall back to the
+semantic programs of the train-balanced questions asked about them, with the
+answer fields stripped (paper App. E); a program is a question, not a fact,
+and the document says so. ``--corpus-scope seeds`` keeps only the seed images
+plus ``--corpus-extra`` random others (smaller disk / faster pilots).
 
 Outputs (image paths relative to --out):
     data/corpus/gqa/{queries,eval_queries,corpus}.jsonl, images/, stats.json
@@ -52,7 +56,9 @@ from evidencetree.utils import get_logger  # noqa: E402
 
 log = get_logger("dataset.prepare_gqa")
 
-_INSTRUCTION_COLUMNS = ["id", "imageId", "question", "answer", "types"]
+_INSTRUCTION_COLUMNS = ["id", "imageId", "question", "answer", "types", "semanticStr"]
+_PROGRAM_DEP_RE = re.compile(r"\s*\[\d+(?:,\s*\d+)*\]")
+_PROGRAM_PREFIX = "Questions asked about this image, as semantic programs (answers removed): "
 
 
 def _clean(text: Any) -> str:
@@ -101,6 +107,28 @@ def scene_graph_text(graph: dict[str, Any], max_objects: int = 80) -> str:
     return " ".join(lines)
 
 
+def program_text(semantic_str: Any) -> str:
+    """One question's program, dependency markers dropped:
+    'select: wall (7)->filter color: white [0]' -> 'select: wall (7) -> filter color: white'."""
+    steps = [_PROGRAM_DEP_RE.sub("", s).strip() for s in str(semantic_str or "").split("->")]
+    return " -> ".join(s for s in steps if s)
+
+
+def program_documents(rows: list[dict[str, Any]], max_programs: int = 40) -> dict[str, str]:
+    """imageId -> fallback document text built from the semantic programs of
+    the questions about that image. Only ``semanticStr`` is read: the answer
+    and fullAnswer fields never reach the corpus."""
+    by_image: dict[str, list[str]] = {}
+    for r in rows:
+        text = program_text(r.get("semanticStr"))
+        if not text:
+            continue
+        programs = by_image.setdefault(str(r["imageId"]), [])
+        if text not in programs and len(programs) < max_programs:
+            programs.append(text)
+    return {i: _PROGRAM_PREFIX + "; ".join(p) + "." for i, p in by_image.items()}
+
+
 def save_split_images(src: Path, split: str, wanted: set[str], out: Path, side: int) -> dict[str, str]:
     """Write the wanted images of one split; returns imageId -> relative path."""
     import pyarrow.parquet as pq
@@ -126,14 +154,16 @@ def save_split_images(src: Path, split: str, wanted: set[str], out: Path, side: 
     return found
 
 
-def run(src: Path, scene_graphs: Path, out: Path, splits_dir: Path, eval_n: int = 2000,
+def run(src: Path, scene_graphs: Path | None, out: Path, splits_dir: Path, eval_n: int = 2000,
         seed_n: int = 20000, corpus_scope: str = "all", corpus_extra: int = 20000,
         image_side: int = 640) -> dict[str, Any]:
     train = read_instructions(src, "train_balanced")
     testdev = read_instructions(src, "testdev_balanced")
-    graphs = load_scene_graphs(scene_graphs)
-    log.info("GQA: %d train-balanced, %d test-dev questions, %d scene graphs",
-             len(train), len(testdev), len(graphs))
+    graphs = load_scene_graphs(scene_graphs) if scene_graphs else {}
+    programs = program_documents(train)
+    log.info("GQA: %d train-balanced, %d test-dev questions, %d scene graphs, "
+             "%d images with program fallbacks", len(train), len(testdev), len(graphs), len(programs))
+    has_doc = graphs.keys() | programs.keys()
 
     by_id: dict[str, dict[str, Any]] = {}
     records = []
@@ -142,8 +172,8 @@ def run(src: Path, scene_graphs: Path, out: Path, splits_dir: Path, eval_n: int 
             qid = f"gqa-{r['id']}"
             by_id[qid] = r
             image_id = str(r["imageId"])
-            # Seeds need their own scene graph in the corpus (oracle property).
-            if pool == "seed" and image_id not in graphs:
+            # Seeds need their own image document in the corpus (oracle property).
+            if pool == "seed" and image_id not in has_doc:
                 continue
             records.append({"query_id": qid, "pool": pool, "image_id": image_id})
     result = select_splits(records, SplitSpec(
@@ -152,7 +182,7 @@ def run(src: Path, scene_graphs: Path, out: Path, splits_dir: Path, eval_n: int 
     ))
 
     seed_images = {str(by_id[q]["imageId"]) for q in result.seed_ids}
-    train_images = {str(r["imageId"]) for r in train if str(r["imageId"]) in graphs}
+    train_images = {str(r["imageId"]) for r in train if str(r["imageId"]) in has_doc}
     if corpus_scope == "all":
         corpus_images = train_images
     else:
@@ -181,10 +211,11 @@ def run(src: Path, scene_graphs: Path, out: Path, splits_dir: Path, eval_n: int 
                          (query_row(q, saved_eval, "testdev_balanced") for q in result.eval_ids))
     n_docs = write_jsonl(out / "corpus.jsonl", (
         {"doc_id": f"gqa-img-{i}", "title": f"GQA image {i}",
-         "text": scene_graph_text(graphs[i]), "image_path": saved_train[i],
-         "entity_id": f"gqa-img-{i}"}
+         "text": scene_graph_text(graphs[i]) if i in graphs else programs[i],
+         "image_path": saved_train[i], "entity_id": f"gqa-img-{i}"}
         for i in sorted(corpus_images) if i in saved_train
     ))
+    n_graph_docs = sum(1 for i in corpus_images if i in saved_train and i in graphs)
 
     write_ids(splits_dir / "seed_ids.txt", result.seed_ids)
     write_ids(splits_dir / "eval_ids.txt", result.eval_ids)
@@ -193,6 +224,8 @@ def run(src: Path, scene_graphs: Path, out: Path, splits_dir: Path, eval_n: int 
         "seed_queries": n_seed,
         "eval_queries": n_eval,
         "corpus_docs": n_docs,
+        "corpus_docs_scene_graph": n_graph_docs,
+        "corpus_docs_program_fallback": n_docs - n_graph_docs,
         "corpus_scope": corpus_scope,
         "missing_train_images": len(corpus_images) - len(saved_train),
         "missing_eval_images": len(eval_images) - len(saved_eval),
@@ -206,7 +239,8 @@ def run(src: Path, scene_graphs: Path, out: Path, splits_dir: Path, eval_n: int 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Prepare GQA.")
     p.add_argument("--src", type=Path, required=True, help="lmms-lab/GQA parquet root")
-    p.add_argument("--scene-graphs", type=Path, required=True, help="sceneGraphs.zip")
+    p.add_argument("--scene-graphs", type=Path, default=None,
+                   help="sceneGraphs.zip (optional: program fallback without it)")
     p.add_argument("--out", default="data/corpus/gqa")
     p.add_argument("--splits-dir", default="DatasetConstruct/splits/gqa")
     p.add_argument("--eval-n", type=int, default=2000)

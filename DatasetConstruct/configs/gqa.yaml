@@ -10,3 +10,11 @@ data:
   data_dir: data/corpus/gqa
   seed_ids: DatasetConstruct/splits/gqa/seed_ids.txt
   eval_ids: DatasetConstruct/splits/gqa/eval_ids.txt
+
+verifier:
+  # Grounding bands from the 100-seed pilot on the scene-graph corpus (2026-10-13;
+  # DESIGN §7): ~5th/95th percentiles of the winning cosines per modality.
+  text_cos_lo: 0.78
+  text_cos_hi: 0.868
+  image_cos_lo: 0.181
+  image_cos_hi: 0.293

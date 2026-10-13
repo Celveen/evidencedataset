@@ -167,9 +167,20 @@ def test_save_load_roundtrip(corpus, tmp_path, images):
         tmp_path / "unified", text_encoder=_txt_enc, image_encoder=_img_enc
     )
     assert len(loaded) == len(r)
-    assert loaded.n_docs == 3
+    assert loaded.n_docs == 3 and loaded.fingerprint is None
     hits = loaded.search_image(red, top_k=2)
     assert {h.doc_id for h in hits} == {"rose"}
+    r.save(tmp_path / "unified", fingerprint="abc")
+    assert UnifiedClipRetriever.load(tmp_path / "unified").fingerprint == "abc"
+
+
+def test_corpus_fingerprint_tracks_content_not_only_ids():
+    from evidencetree.actions.retrievers import corpus_fingerprint
+
+    a = [Document(doc_id="d1", title="GQA image 1", text="program text")]
+    b = [Document(doc_id="d1", title="GQA image 1", text="scene graph text")]
+    assert corpus_fingerprint(a) == corpus_fingerprint(list(a))
+    assert corpus_fingerprint(a) != corpus_fingerprint(b)
 
 
 def test_executor_text_search_over_unified_space_tags_evidence(corpus):

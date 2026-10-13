@@ -300,13 +300,21 @@ Classify how this answer relates to the evidence:
   of it unconfirmed.
 - UNSUPPORTED: the answer relies on external factual knowledge (entity facts,
   numbers, dates, names, statistics) that the evidence does not contain.
-- NOT_REQUIRED: the question can be answered from the question text, its
-  answer options and its image by reasoning or perception alone — grammar,
-  logic, arithmetic, reading a given passage, sentence or diagram, comparing
-  the options, or everyday commonsense — so no retrieved knowledge is needed.
-  You cannot see the image: judge from what the question asks. Do NOT use this
-  for facts about specific entities (capitals, species data, dates,
-  measurements, biographies): those always require evidence.
+- NOT_REQUIRED: no retrieved knowledge is needed. Either the question's own
+  text and options settle it by reasoning (grammar, logic, arithmetic, reading
+  a given passage or sentence, comparing the options), or it asks what the
+  question's own image shows — objects and their everyday names (a cow, a
+  tree, a couch), colors, materials, positions, counts, what someone is doing,
+  or a reading of a chart, diagram or instrument in it (a thermometer's
+  temperature, which solution has more particles) — or everyday commonsense
+  settles it. You cannot see the image, but the answerer could: if the
+  question asks about what its image shows and the evidence does not settle
+  it, choose NOT_REQUIRED, not UNSUPPORTED. Retrieved text that only restates
+  QUESTIONS about an image is not evidence for their answers. Do NOT use
+  NOT_REQUIRED for fine-grained identification or facts about a specific named
+  entity (the exact species or breed; which landmark, person, country, state or
+  colony is shown; dates, known measurements, biographies) or for subject
+  knowledge a student would have to look up: those require evidence.
 
 Give your reason in one or two sentences. Then write a last line holding only
 the label: SUPPORTED, PARTIAL, UNSUPPORTED or NOT_REQUIRED."""

@@ -146,15 +146,32 @@ unless `--force`, so the paid steps never see their input change.
   `mcts.expansion: diverse` keeps the best child of each proposed action type
   before a second child of any type — without a trained PRM the prior cannot
   rank types, and same-state contrasts across types are exactly what the
-  dataset is for. The step-1 guidance scorer gives partial states a neutral
-  prior (0.5) and scores finished rollouts by answer coverage in the evidence;
-  it is never a label.
+  dataset is for. The search is guided by the gold answer (`prm.scorer:
+  outcome`): a finished rollout is rewarded 1 if its answer is right under the
+  benchmark's rule, else 0; unfinished states and every expansion prior get a
+  neutral 0.5, so gold never decides which proposed children are kept, only
+  where the rollouts after the first k go. The first pilot used an
+  answer-in-evidence overlap heuristic instead; it ranked right answers below
+  wrong ones (AUC 0.43 on GQA, 0.46 on ScienceQA — a GQA "no" matches the
+  substring of "not"), so the extra rollouts chased failing branches and the
+  tree's top-rated path was right less often than an average one (37% vs 42%
+  on GQA). The guidance is never a label: labels come from step 2.
 * Retrieval: hybrid — BM25 over the text side (a sparse-matrix implementation
   scoring like rank-bm25, cached on disk) interleaved with one CLIP index over
   text and image units; entity dedupe; text top-3, image top-1; an LRU cache
   memoizes repeated queries.
+* Fallback title follow-up (the text branch the proposer adds when the policy
+  proposed no text_search) reuses only the title of an image_search IMAGE hit,
+  i.e. the entity matched to the question image. Following a text hit's title
+  looked up some other entity: in the GQA pilot 78 of 162 id lookups fetched
+  another image's scene graph.
 * Answers: the proposal prompt and a dedicated answer prompt ask for the short
-  answer only; drafts are normalized (first line, no "Answer:", no quotes).
+  answer only — yes or no, a name, a color, a position, a number with its
+  unit, a date or the chosen option — and warn that retrieved pages may
+  describe other images or entities; drafts are normalized (first line, no
+  "Answer:", no quotes, "No, because …" → "No"). In the GQA pilot the old
+  prompt never mentioned yes/no: 25% of yes/no answers were something else
+  ("scarf 1 blue") and 12% of all answers were sentences.
 * Outcome: `metrics.outcome_match` — InfoSeek relaxed accuracy (numeric range
   for value questions), ScienceQA multiple choice (letter, option text, or
   both; contradictions rejected), GQA normalized exact match.
@@ -207,13 +224,18 @@ last line; the verdict is read from that line and the reason is stored as
 `answer_support_reason` for audits. In the first pilot a one-word verdict from
 the local Qwen3-Coder never used NOT_REQUIRED (0 of 89 judged answers) and
 called evidence that had nothing to do with the answer SUPPORTED (about 9 of
-56). With the reason first and NOT_REQUIRED spelled out — answerable from the
-question, its options and its image by grammar, logic, arithmetic, reading a
-given passage or diagram, comparing the options or everyday commonsense; never
-for entity facts — reasoning questions get NOT_REQUIRED as the paper intends
-(App. H, Case 3) and SUPPORTED becomes stricter. This departs from the
-one-word prompt printed in the paper's Appendix D; the four verdicts and their
-mapping are unchanged.
+56). With the reason first and NOT_REQUIRED spelled out — answerable by
+reasoning over the question and its options, by looking at the question's own
+image (everyday object names, colors, positions, counts, a chart or instrument
+reading) or by everyday commonsense; never for fine-grained identification
+(exact species, which landmark, person or place is shown) or entity facts —
+reasoning questions get NOT_REQUIRED as the paper intends (App. H, Case 3) and
+SUPPORTED becomes stricter. Without the image clause, DeepSeek judged 29 of 40
+correct GQA perception answers UNSUPPORTED (pinning them at the 0.3 floor);
+with it, 6. The prompt also says that retrieved text which only restates
+questions about an image (GQA program fallbacks, ScienceQA question-titled
+hints) is not evidence. This departs from the one-word prompt printed in the
+paper's Appendix D; the four verdicts and their mapping are unchanged.
 
 ### 5.5 Step 5 — rationales
 

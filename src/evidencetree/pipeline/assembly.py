@@ -20,8 +20,10 @@ Config keys consumed (superset of the two former call sites):
                            deterministic stand-in CLIP encoders (default true)
     policy | generation    proposer / answer-drafting backend
     action_gate.{enabled,mode,max_actions}
-    prm.scorer             overlap | visualprm (default: overlap when mock,
-                           else visualprm) + prm.model_name/device
+    prm.scorer             outcome | overlap | visualprm (default: overlap when
+                           mock, else visualprm) + prm.model_name/device;
+                           outcome = gold-answer rollout rewards with neutral
+                           expansion priors (dataset construction only)
     mcts | search          SearchConfig block (both spellings accepted)
 
 Mock mode never downloads a model. When the mock queries carry images it
@@ -42,7 +44,12 @@ from evidencetree.eval.benchmarks import Document, Query
 from evidencetree.generation import build_generator
 from evidencetree.mcts import HeuristicProposer, LLMProposer, MCTSSearcher, SearchConfig
 from evidencetree.mcts.proposer import GatedProposer
-from evidencetree.prm.model import HeuristicOverlapScorer, VisualPRMScorer
+from evidencetree.prm.model import (
+    HeuristicOverlapScorer,
+    NeutralScorer,
+    OutcomeScorer,
+    VisualPRMScorer,
+)
 from evidencetree.utils import get_logger
 
 log = get_logger("pipeline.assembly")
@@ -195,7 +202,17 @@ def build_search_stack(
 
     prm_cfg = dict(cfg.get("prm", {}))
     scorer_kind = prm_cfg.get("scorer") or ("overlap" if mock else "visualprm")
-    if scorer_kind == "overlap":
+    prior_scorer = None
+    if scorer_kind == "outcome":
+        # Construction only: rollouts are judged by the gold answer, while the
+        # expansion prior stays neutral so gold never decides which proposed
+        # children are kept (DESIGN §5.1).
+        scorer = OutcomeScorer(
+            benchmark,
+            {(q.question, q.image_path): (q.gold_answers, q.metadata) for q in queries},
+        )
+        prior_scorer = NeutralScorer(OutcomeScorer.PARTIAL_PRIOR)
+    elif scorer_kind == "overlap":
         scorer = HeuristicOverlapScorer()
     elif scorer_kind == "visualprm":
         scorer = VisualPRMScorer(
@@ -219,6 +236,7 @@ def build_search_stack(
         proposer=proposer,
         scorer=scorer,
         config=SearchConfig.from_dict({"search": search_cfg}),
+        prior_scorer=prior_scorer,
     )
 
 
@@ -288,23 +306,25 @@ def _build_or_load_unified(
         dedupe_key=_dedupe_key(retriever_cfg),
     )
     injected = text_encoder is not None or image_encoder is not None
-    index_dir = None
+    index_dir = fingerprint = None
     if not injected:  # caching only makes sense for the real CLIP encoders
         data_dir = Path(cfg.get("data", {}).get("data_dir") or ".")
         index_value = image_cfg.get("index_dir")
         index_dir = Path(index_value) if index_value else data_dir / "unified_clip_index"
+        fingerprint = corpus_fingerprint(corpus)
         if (index_dir / "vectors.npy").exists() and (index_dir / "units.jsonl").exists():
             loaded = UnifiedClipRetriever.load(index_dir, **kwargs)
-            if loaded.n_docs == len(corpus):
+            if loaded.fingerprint == fingerprint and loaded.n_docs == len(corpus):
                 log.info("Loaded cached unified CLIP index: %s", index_dir)
                 return loaded
             log.warning(
-                "Ignoring stale unified CLIP index (%d docs, corpus has %d): %s",
+                "Ignoring stale unified CLIP index (built for another corpus or "
+                "version: %d docs, corpus has %d): %s",
                 loaded.n_docs, len(corpus), index_dir,
             )
 
     retriever = UnifiedClipRetriever(**kwargs).build(corpus)
     if index_dir is not None:
-        retriever.save(index_dir)
+        retriever.save(index_dir, fingerprint)
         log.info("Built and cached unified CLIP index: %s", index_dir)
     return retriever

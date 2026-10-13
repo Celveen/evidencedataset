@@ -163,6 +163,51 @@ class VisualPRMScorer:
         return float(pair[1].item())
 
 
+class OutcomeScorer:
+    """Construction-only search guidance: a finished rollout scores 1.0 when its
+    answer is right under the benchmark's official rule (``outcome_match``),
+    else 0.0; an unfinished trajectory gets the neutral ``PARTIAL_PRIOR``.
+
+    Dataset construction knows the gold answers, and MCTS-based process-label
+    pipelines judge their rollouts by them. The first pilot showed why a
+    proxy is worse: :class:`HeuristicOverlapScorer` ranked right answers BELOW
+    wrong ones (AUC 0.43 on GQA, 0.46 on ScienceQA), steering the extra
+    rollouts toward failing branches. This only decides where the search
+    spends its rollouts; the labels are computed in step 2. It can never guide
+    inference, where no gold exists.
+
+    ``gold`` maps ``(question, image_path)`` -> ``(gold_answers, metadata)``.
+    """
+
+    PARTIAL_PRIOR = 0.5
+
+    def __init__(self, benchmark: str, gold: dict[tuple[str, str | None], tuple[Sequence[str], dict]]) -> None:
+        self.benchmark = benchmark
+        self.gold = dict(gold)
+
+    def score(self, trajectory: Trajectory, **kwargs: Any) -> float:
+        from evidencetree.eval.metrics import outcome_match
+
+        if not trajectory.steps or trajectory.steps[-1].action_type != "answer":
+            return self.PARTIAL_PRIOR
+        key = (trajectory.question, trajectory.image_path)
+        if key not in self.gold:
+            raise KeyError(f"no gold answer for question {trajectory.question[:60]!r}")
+        answers, metadata = self.gold[key]
+        return float(outcome_match(trajectory.final_answer, answers, self.benchmark, metadata))
+
+
+class NeutralScorer:
+    """Constant score: as the expansion prior it keeps the policy's own proposal
+    order, so gold answers never decide which proposed children are kept."""
+
+    def __init__(self, value: float = 0.5) -> None:
+        self.value = float(value)
+
+    def score(self, trajectory: Trajectory, **kwargs: Any) -> float:
+        return self.value
+
+
 class HeuristicOverlapScorer:
     """Framework-debugging scorer — NOT a PRM.
 

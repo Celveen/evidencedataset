@@ -269,6 +269,35 @@ def test_prepare_gqa(tmp_path):
     assert all((out / e["image_path"]).exists() for e in evals)
 
 
+def test_prepare_gqa_without_scene_graphs_uses_program_fallback(tmp_path):
+    src = tmp_path / "GQA"
+    train = [{"id": f"t{i}", "imageId": f"{i // 3}", "question": f"What is on the wall {i}?",
+              "answer": "SECRETANSWER", "fullAnswer": "The SECRETANSWER is on the wall.",
+              "types": {"semantic": "rel"},
+              "semanticStr": f"select: wall (1{i})->relate: _,on,s (2{i}) [0]->query: name [1]"}
+             for i in range(12)]
+    dev = [{"id": f"d{i}", "imageId": f"n{i}", "question": "Is there a cat?", "answer": "no",
+            "types": {"semantic": "exist"}, "semanticStr": "select: cat (9)->exist [0]"}
+           for i in range(4)]
+    for split, rows in (("train_balanced", train), ("testdev_balanced", dev)):
+        (src / f"{split}_instructions").mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist(rows), src / f"{split}_instructions" / "x.parquet")
+        (src / f"{split}_images").mkdir(parents=True)
+        pq.write_table(pa.Table.from_pylist([{"id": i, "image": {"bytes": _png(), "path": None}}
+                                             for i in sorted({r["imageId"] for r in rows})]),
+                       src / f"{split}_images" / "x.parquet")
+    mod = _load("prepare_gqa_fallback_t", _DC / "data_prep" / "prepare_gqa.py")
+    out = tmp_path / "out"
+    stats = mod.run(src, None, out, tmp_path / "splits", eval_n=2, seed_n=100)
+    assert stats["seed_queries"] == 4 and stats["corpus_docs"] == 4
+    assert stats["corpus_docs_program_fallback"] == 4 and stats["corpus_docs_scene_graph"] == 0
+    docs = [json.loads(l) for l in (out / "corpus.jsonl").open()]
+    assert docs[0]["text"].startswith("Questions asked about this image")
+    assert "select: wall (10) -> relate: _,on,s (20) -> query: name" in docs[0]["text"]
+    assert "SECRETANSWER" not in (out / "corpus.jsonl").read_text()   # answers never indexed
+    assert not any(d["doc_id"].startswith("gqa-img-n") for d in docs)  # no test-dev images
+
+
 @pytest.mark.parametrize("text,head", [
     ("Dove 1 is a species of bird in the family X.", "bird"),
     ("Rosa x is a species of flowering plant in the rose family.", "plant"),

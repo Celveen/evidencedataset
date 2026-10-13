@@ -249,7 +249,7 @@ def test_llm_proposer_completes_text_branch_on_single_answer_reply():
     from evidencetree.actions.action_space import (
         AnswerAction, Evidence, SearchState, TextSearchAction,
     )
-    from evidencetree.mcts.proposer import LLMProposer
+    from evidencetree.mcts.proposer import LLMProposer, keyword_query
 
     class OneAnswerGen:
         def generate(self, prompt, images, **kw):
@@ -268,7 +268,10 @@ def test_llm_proposer_completes_text_branch_on_single_answer_reply():
     types = {type(a) for a in actions}
     assert AnswerAction in types and TextSearchAction in types
     ts = [a for a in actions if isinstance(a, TextSearchAction)]
-    assert any("Allan Cunningham" in a.query for a in ts)
+    # A text hit does not establish who is pictured: the synthesized branch
+    # searches the question's own keywords instead of following that page.
+    assert not any("Allan Cunningham" in a.query for a in ts)
+    assert any(a.query == keyword_query(state.question) for a in ts)
 
 
 # --------------------------------------------------------------------------- #
@@ -311,7 +314,55 @@ def test_clean_answer():
     assert clean_answer("Answer: Paris.") == "Paris"
     assert clean_answer('**"September 7, 1963"**\nBecause the page says so.') == "September 7, 1963"
     assert clean_answer("") == ""
+    assert clean_answer("No, based on the descriptions there is no fork.") == "No"
+    assert clean_answer("Yes.") == "Yes"
+    assert clean_answer("No parking sign") == "No parking sign"     # an entity, not a verdict
     assert len(clean_answer("word " * 100).split()) == 24
+
+
+def test_outcome_scorer_judges_finished_rollouts_by_the_gold_answer():
+    from evidencetree.prm.model import Trajectory, TrajectoryStep
+    from evidencetree.prm.model import NeutralScorer, OutcomeScorer
+
+    meta = {"choices": ["reptile", "mammal"], "answer_index": 1}
+    scorer = OutcomeScorer("scienceqa", {("Which is a mammal?", "a.jpg"): (["mammal", "B"], meta)})
+    search = TrajectoryStep(action_type="text_search", action_input="mammal", observation="...")
+
+    def traj(answer=None):
+        steps = [search] + ([TrajectoryStep(action_type="answer", action_input=answer, observation="")]
+                            if answer is not None else [])
+        return Trajectory(question="Which is a mammal?", steps=steps,
+                          final_answer=answer or "", image_path="a.jpg")
+
+    assert scorer.score(traj("B. mammal")) == 1.0
+    assert scorer.score(traj("reptile")) == 0.0
+    assert scorer.score(traj()) == OutcomeScorer.PARTIAL_PRIOR        # unfinished
+    with pytest.raises(KeyError):                                   # finished, but no gold
+        scorer.score(Trajectory(question="unknown", steps=traj("x").steps, final_answer="x"))
+    assert NeutralScorer().score(traj("reptile")) == 0.5
+
+
+def test_outcome_guided_search_keeps_neutral_priors_and_binary_rewards():
+    from evidencetree.prm.model import NeutralScorer, OutcomeScorer
+
+    queries, corpus = load_infoseek(n=4, mock=True)
+    gold = {(q.question, q.image_path): (q.gold_answers, q.metadata) for q in queries}
+    searcher = MCTSSearcher(
+        executor=ActionExecutor(text_retriever=BM25Retriever().build(corpus), top_k=3),
+        proposer=HeuristicProposer(build_generator({"backend": "mock", "mock_accuracy": 0.5,
+                                                    "mock_seed": 0})),
+        scorer=OutcomeScorer("infoseek", gold),
+        config=SearchConfig(rollouts=6, max_depth=3, top_k_children=3, early_stop_q=2.0),
+        prior_scorer=NeutralScorer(),
+    )
+    for q in queries:
+        result = searcher.search(q.question, image_path=q.image_path)
+        assert {r.reward for r in result.rollout_log} <= {0.0, 1.0}
+        stack = [result.root]
+        while stack:
+            node = stack.pop()
+            stack.extend(node.children)
+            assert all(child.prior == 0.5 for child in node.children)   # gold never prunes
 
 
 def test_keyword_query_drops_choice_labels():
@@ -323,6 +374,20 @@ def test_keyword_query_drops_choice_labels():
     assert keyword_query(question) == "kind sentence this Mackenzie gave me flowers declarative exclamatory"
     assert keyword_query("Who wrote this? Choices: A. J. K. Rowling; B. C. S. Lewis") == \
         "wrote this J K Rowling C S Lewis"
+
+
+def test_title_followup_uses_only_the_image_search_match():
+    from evidencetree.mcts.proposer import title_followup_query
+
+    other = Evidence(evidence_id="e0", step_index=0, source_action="text_search", doc_id="d9",
+                     text="cake. fork. paper.", title="GQA image 999", result_modality="text")
+    state = SearchState(question="What is the fork in?", image_path="q.jpg").advanced(
+        TextSearchAction(query="fork"), [other])
+    assert title_followup_query(state) is None              # a text hit names no entity
+    own = Evidence(evidence_id="e1", step_index=1, source_action="image_search", doc_id="d1",
+                   text="", title="GQA image 123", image_path="d1.jpg", result_modality="image")
+    state = state.advanced(ImageSearchAction(), [own])
+    assert title_followup_query(state).query == "GQA image 123 fork"
 
 
 def test_llm_proposer_drafts_short_answers_with_its_own_prompt():
@@ -340,6 +405,7 @@ def test_llm_proposer_drafts_short_answers_with_its_own_prompt():
     assert action.text == "Canton, Ohio"
     prompt, docs, kw = gen.calls[0]
     assert docs == [] and "short phrase" in prompt and kw["image_paths"] == ["/tmp/q.jpg"]
+    assert "yes or no" in prompt and "OTHER images" in prompt
 
 
 def test_heuristic_proposer_adds_title_followup():

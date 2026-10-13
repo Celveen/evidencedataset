@@ -79,6 +79,20 @@ def test_unified_backend_wires_unified_for_text_and_image(data):
     assert searcher.cfg.rollouts == 2 and searcher.cfg.max_depth == 2
 
 
+def test_outcome_scorer_wiring(data):
+    from evidencetree.prm.model import NeutralScorer, OutcomeScorer
+
+    queries, corpus = data
+    cfg = {**_cfg(), "prm": {"scorer": "outcome"}}
+    searcher = build_search_stack(cfg, queries, corpus, mock=True,
+                                  text_encoder=_txt_enc, image_encoder=_img_enc)
+    assert isinstance(searcher.scorer, OutcomeScorer)
+    assert isinstance(searcher.prior_scorer, NeutralScorer)
+    assert searcher.scorer.gold[("which flower is red?", queries[0].image_path)][0] == ["rose"]
+    result = searcher.search(queries[0].question, image_path=queries[0].image_path)
+    assert {r.reward for r in result.rollout_log} <= {0.0, 1.0}
+
+
 def test_bm25_backend_still_available(data):
     queries, corpus = data
     cfg = _cfg(backend="bm25", image_search=False)
